@@ -217,10 +217,16 @@ def _send(req, timeout):
         return None, str(getattr(e, "reason", e)), int((time.monotonic() - t0) * 1000)
 
 
+_OUT_OF_CREDIT = re.compile(r"quota|insufficient.balance|billing", re.I)
+
+
 def _verdict(code, body, p):
     """-> (status, detail) for an answer that is not a plain success"""
     if code in (401, 403):
         return "fail", "key rejected (HTTP %d)" % code
+    # Some vendors answer an empty balance with 429 (Moonshot: exceeded_current_quota_error, OpenAI: insufficient_quota).
+    if code == 402 or (code == 429 and _OUT_OF_CREDIT.search(body or "")):
+        return "fail", "out of credit (HTTP %d): %s" % (code, _reply_message(body, p))
     if code == 429:
         return "warn", "rate limited (HTTP 429): reachable, key accepted"
     if code is not None and code >= 500:
