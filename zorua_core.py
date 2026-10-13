@@ -1339,20 +1339,43 @@ def provider_put(args):
 
 
 def provider_check(args):
-    """Is the endpoint reachable and the key accepted? --json prints the result and exits 0 (for front ends)."""
+    """Is the endpoint reachable and the key accepted? One name prints that provider's result; no name
+    (or several) checks all of them (those) in parallel. --json prints the result(s) and exits 0 (for front ends)."""
     names = [a for a in args if not a.startswith("-")]
     provs = zp.load(CONFIG_DIR)
-    if len(names) != 1 or names[0] not in provs or set(args) - set(names) - {"--json"}:
-        err("usage: zorua provider check <name> [--json]   (providers: %s)" % (" ".join(provs) or "none"))
+    if any(n not in provs for n in names) or set(args) - set(names) - {"--json"}:
+        err("usage: zorua provider check [name ...] [--json]   (providers: %s)" % (" ".join(provs) or "none"))
         return 1
-    res = zp.check(provs[names[0]])
-    res["checked_at"] = int(time.time())
-    if "--json" in args:
-        print(json.dumps(res, ensure_ascii=False))
+    as_json = "--json" in args
+    if len(names) == 1:
+        res = zp.check(provs[names[0]])
+        res["checked_at"] = int(time.time())
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False))
+            return 0
+        print("%s  %s  %dms  via %s%s" % (res["status"], res["detail"], res["ms"], res["via"],
+                                         "" if res["http"] is None else "  (HTTP %d)" % res["http"]))
+        return 1 if res["status"] == "fail" else 0
+    order = sorted(dict.fromkeys(names) or provs, key=lambda n: (zp.agent(provs[n]), n))
+    if not order:
+        print("{}" if as_json else "(no providers yet — zorua provider add <name> --base-url URL, or: zorua provider import cc-switch)")
         return 0
-    print("%s  %s  %dms  via %s%s" % (res["status"], res["detail"], res["ms"], res["via"],
-                                     "" if res["http"] is None else "  (HTTP %d)" % res["http"]))
-    return 1 if res["status"] == "fail" else 0
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {n: ex.submit(zp.check, provs[n]) for n in order}
+        results = {n: dict(futs[n].result(), checked_at=int(time.time())) for n in order}
+    if as_json:
+        print(json.dumps(results, ensure_ascii=False))
+        return 0
+    mark = {"ok": "✓", "warn": "!", "fail": "✗"}
+    print("  %-14s %-7s %-6s %7s  %s" % ("NAME", "AGENT", "STATUS", "TIME", "DETAIL"))
+    for n, res in results.items():
+        print("%s %-14s %-7s %-6s %5dms  %s" % (mark[res["status"]], n, zp.agent(provs[n]), res["status"],
+                                              res["ms"], res["detail"]))
+    bad = sum(r["status"] == "fail" for r in results.values())
+    if bad:
+        sys.stdout.flush()
+        err("%d of %d provider(s) failed; details: zorua provider check <name>" % (bad, len(results)))
+    return 1 if bad else 0
 
 
 def provider_models(args):
@@ -1484,7 +1507,7 @@ def cmd_provider(args):
         return provider_models(rest)
     if sub == "import":
         return provider_import(rest)
-    err("usage: zorua provider [ls | add <name> --base-url URL ... | show <name> | get <name> | put <name> | check <name> | rm <name> | models <name> ... | import cc-switch]")
+    err("usage: zorua provider [ls | add <name> --base-url URL ... | show <name> | get <name> | put <name> | check [name ...] | rm <name> | models <name> ... | import cc-switch]")
     return 1
 
 

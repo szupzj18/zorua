@@ -253,8 +253,9 @@ export default function Dashboard() {
       });
     }
   };
+  // In parallel: each check is one request to a different endpoint, and one slow endpoint must not hold up the rest.
   const checkAll = async () => {
-    for (const p of data?.providers ?? []) await check(p.name);
+    await Promise.all((data?.providers ?? []).map((p) => check(p.name)));
   };
   // A saved provider has a new endpoint or key, so its last result no longer applies.
   const dropCheck = (name: string) =>

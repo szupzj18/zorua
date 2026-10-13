@@ -437,7 +437,27 @@ contains "$(zorua provider check fetx --json)" '"status": "ok"' "provider check:
 contains "$(zorua provider check bad --json)" '"status": "fail"' "provider check --json reports failure and exits 0"
 fails zorua provider check bad
 fails zorua provider check nope
+fails zorua provider check fet nope
+zorua provider check fet fetx >/dev/null || die "provider check of several healthy providers failed"
+out=$(zorua provider check 2>&1) && die "provider check (all) must fail when one provider fails"
+contains "$out" "✓ fet " "provider check (all): healthy row"
+contains "$out" "✗ bad " "provider check (all): failed row"
+contains "$out" "provider(s) failed" "provider check (all): failure summary"
+not_contains "$out" "sk-f-secret" "provider check (all) never prints a key"
+out=$(zorua provider check --json)
+contains "$out" '"fetx": {"status": "ok"' "provider check --json (all): keyed by name"
+contains "$out" '"bad": {"status": "fail"' "provider check --json (all): includes failures, exits 0"
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true
+# Out of credit is a failure, also when a vendor says it with 429 (Moonshot, OpenAI); a plain 429 is not.
+out=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import zorua_providers as zp
+p = {"env": {"ANTHROPIC_BASE_URL": "https://x", "ANTHROPIC_AUTH_TOKEN": "sk-k-secret-123456"}}
+for c, b in ((402, "{\"error\":{\"message\":\"Insufficient Balance\"}}"),
+             (429, "{\"error\":{\"message\":\"suspended due to insufficient balance\",\"type\":\"exceeded_current_quota_error\"}}"),
+             (429, "{\"error\":{\"message\":\"slow down\"}}")):
+    print(c, *zp._verdict(c, b, p))' "$ROOT")
+contains "$out" "402 fail out of credit (HTTP 402): Insufficient Balance" "provider check: 402 is out of credit"
+contains "$out" "429 fail out of credit (HTTP 429)" "provider check: a quota 429 is out of credit"
+contains "$out" "429 warn rate limited" "provider check: a plain 429 is a warning"
 ok "provider models: catalog, pick per shell, fetch, check"
 
 # ---- 9. version --------------------------------------------------------------
