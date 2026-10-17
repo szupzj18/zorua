@@ -11,6 +11,8 @@ Stdlib only, Python 3.8+.
 import base64
 import copy
 import hashlib
+import shutil
+import stat
 import json
 import math
 import os
@@ -38,7 +40,7 @@ CLAUDE_SETTINGS_TEMPLATE = os.path.join(CONFIG_DIR, "claude-settings.json")
 BINDING_FILE = os.path.join(CONFIG_DIR, "bindings.tsv")
 CLAUDE_FILE = os.path.join(CONFIG_DIR, "claude-accounts.tsv")
 SHELL = os.environ.get("ZORUA_SHELL", "zsh")
-RESERVED = {"tag", "pick", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
+RESERVED = {"doctor", "tag", "pick", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
             "unset", "help", "add", "rm", "bind", "unbind", "binds", "version",
             "prompt", "apply", "names", "hook", "-h", "--help", "-v", "--version"}
 
@@ -1054,6 +1056,237 @@ def cmd_pick(args):
         for c in excluded:
             print("  %s: %s" % (c["name"], "; ".join(c["reasons"])))
     return 0 if ranked else 1
+
+
+def _doctor_json(path):
+    try:
+        with open(path) as f:
+            value = json.load(f)
+        if not isinstance(value, dict):
+            raise ValueError("expected an object")
+        return value
+    except FileNotFoundError:
+        return {}
+
+
+def _doctor_toml(path):
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return {}, ""
+    try:
+        import tomllib
+    except ImportError:
+        # Python 3.8-3.10: the hook trust table is simple enough to read without
+        # a TOML dependency. Other inline hook definitions are reported unverified.
+        states = {}
+        pattern = r'^\s*\[hooks\.state\.("(?:[^"\\]|\\.)*"|[^\]]+)\]\s*\n(.*?)(?=^\s*\[|\Z)'
+        for match in re.finditer(pattern, raw, re.M | re.S):
+            key = match.group(1).strip()
+            key = json.loads(key) if key.startswith('"') else key.strip("'")
+            entry = {}
+            trusted = re.search(r'^\s*trusted_hash\s*=\s*"([^"\n]+)"', match.group(2), re.M)
+            if trusted:
+                entry["trusted_hash"] = trusted.group(1)
+            if re.search(r'^\s*enabled\s*=\s*false\b', match.group(2), re.M):
+                entry["enabled"] = False
+            states[key] = entry
+        plugins = {}
+        for match in re.finditer(r'^\s*\[plugins\.("(?:[^"\\]|\\.)*"|[^\]]+)\]\s*\n(.*?)(?=^\s*\[|\Z)', raw, re.M | re.S):
+            key = match.group(1).strip()
+            key = json.loads(key) if key.startswith('"') else key.strip("'")
+            plugins[key] = {"enabled": bool(re.search(r'^\s*enabled\s*=\s*true\b', match.group(2), re.M))}
+        return {"hooks": {"state": states}, "plugins": plugins, "_partial": True}, raw
+    return tomllib.loads(raw), raw
+
+
+def _doctor_hook_hash(event, group, handler):
+    # Codex hashes sorted JSON of normalized TOML values, not the source file.
+    # See codex-rs/hooks/src/engine/discovery.rs and config/src/fingerprint.rs.
+    if handler.get("type") != "command":
+        return None
+    timeout = max(1, int(handler.get("timeout", 1 if event in ("SessionEnd", "Interrupt") else 600)))
+    if event in ("SessionEnd", "Interrupt"):
+        timeout = min(3, timeout)
+    h = {"type": "command", "command": handler["command"], "timeout": timeout, "async": handler.get("async", False)}
+    if handler.get("statusMessage") is not None:
+        h["statusMessage"] = handler["statusMessage"]
+    limit = handler.get("additionalContextLimit")
+    if event in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "SubagentStart") and limit is not None and limit != 2500:
+        h["additionalContextLimit"] = limit
+    identity = {"event_name": re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower(), "hooks": [h]}
+    matcher = group.get("matcher")
+    if matcher is not None and matcher.strip():
+        identity["matcher"] = matcher.strip()
+    payload = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def doctor_hooks(home, config, raw):
+    path = os.path.abspath(os.path.join(home, "hooks.json"))
+    sources = [(path, _doctor_json(path).get("hooks", {}))]
+    hooks = config.get("hooks") or {}
+    sources.append((os.path.abspath(os.path.join(home, "config.toml")), {k: v for k, v in hooks.items() if k != "state"}))
+    states = hooks.get("state", {})
+    missing, modified, unknown, total = 0, 0, 0, 0
+    for source, events in sources:
+        for event, groups in events.items():
+            if not isinstance(groups, list):
+                raise ValueError("hook event must contain matcher groups")
+            event_key = re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower()
+            for gi, group in enumerate(groups):
+                for hi, handler in enumerate(group.get("hooks", [])):
+                    key = "%s:%s:%d:%d" % (source, event_key, gi, hi)
+                    state = states.get(key, states.get("file:" + key, {}))
+                    if state.get("enabled") is False:
+                        continue
+                    total += 1
+                    trusted = state.get("trusted_hash")
+                    current = _doctor_hook_hash(event, group, handler)
+                    if not trusted:
+                        missing += 1
+                    elif current is None:
+                        unknown += 1
+                    elif trusted != current:
+                        modified += 1
+    partial = config.get("_partial") and re.search(r'^\s*\[\[?hooks\.(?!state)', raw, re.M)
+    if missing or modified:
+        return "fail", "%d untrusted, %d modified enabled hook(s)" % (missing, modified)
+    # Plugin hooks have a separate content fingerprint. Never assert they are trusted
+    # just because a declaration has a saved trusted_hash.
+    if unknown or partial or config.get("plugins"):
+        return "warn", "account hooks inspected; inline/plugin/MCP hooks need review in Codex /hooks"
+    return "ok", "%d enabled account hook(s), trust hashes match" % total
+
+
+def _doctor_permissions(path, sensitive=False):
+    st = os.stat(path)
+    mode = stat.S_IMODE(st.st_mode)
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        return False
+    if sensitive:
+        return mode & 0o077 == 0 and bool(mode & 0o400)
+    return mode & 0o022 == 0 and mode & 0o700 == 0o700
+
+
+def doctor_account(name, home, kind):
+    checks = []
+    def add(label, status, detail, fix=""):
+        checks.append({"check": label, "status": status, "detail": detail, "fix": fix if status != "ok" else ""})
+    quoted = shlex.quote(home)
+    exists = os.path.isdir(home)
+    add("directory", "ok" if exists else "fail", "configuration directory exists" if exists else "configuration directory missing",
+        "Restore the directory or re-register: zorua add %s --home %s --no-login" % (name, quoted))
+    if exists:
+        add("permissions", "ok" if _doctor_permissions(home) else "fail", "directory ownership and permissions",
+            "Check ownership, then chmod 700 %s" % quoted)
+    for filename in (("auth.json",) if kind == "codex" else (".credentials.json", "settings.json")):
+        path = os.path.join(home, filename)
+        if os.path.isfile(path):
+            add("permissions:" + filename, "ok" if _doctor_permissions(path, True) else "fail", "private credential/settings file",
+                "Check ownership, then chmod 600 %s" % shlex.quote(path))
+    if kind == "claude":
+        status = claude_status(home) if exists else {}
+        add("login", "ok" if status.get("loggedIn") else "fail", "signed in" if status.get("loggedIn") else "not signed in or status unavailable",
+            "zorua login " + name)
+        try:
+            settings = _doctor_json(os.path.join(home, "settings.json"))
+            env = settings.get("env") or {}
+            proxy = any(env.get(k) for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"))
+            add("proxy", "ok" if proxy else "warn", "proxy configured in account settings" if proxy else "no proxy in account settings; direct access may return 403/401",
+                "Set env.HTTPS_PROXY (or HTTP_PROXY/ALL_PROXY) in this account's settings.json when a proxy is required")
+        except (OSError, ValueError, AttributeError):
+            settings = {}
+            add("settings", "fail", "cannot parse/read settings.json", "Repair this account's settings.json")
+        integration_text = json.dumps(settings.get("hooks", {}))
+    else:
+        try:
+            auth = _doctor_json(os.path.join(home, "auth.json"))
+            tokens = auth.get("tokens") or {}
+            valid = bool(auth.get("OPENAI_API_KEY") or tokens.get("access_token") or tokens.get("id_token"))
+            expired = False
+            for field in ("access_token", "id_token"):
+                try:
+                    part = tokens.get(field, "").split(".")[1]
+                    claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+                    if "exp" in claims:
+                        expired = float(claims["exp"]) <= time.time()
+                        break
+                except (ValueError, IndexError, TypeError):
+                    continue
+            add("login", "ok" if valid and not expired else "fail", "credentials present (local check)" if valid and not expired else "missing, invalid or expired credentials", "zorua login " + name)
+        except (OSError, ValueError, AttributeError):
+            add("login", "fail", "cannot parse/read auth.json", "zorua login " + name)
+        try:
+            config, raw = _doctor_toml(os.path.join(home, "config.toml"))
+            hook_status, detail = doctor_hooks(home, config, raw)
+            add("hooks", hook_status, detail, "Start codex with CODEX_HOME=%s, then review and trust the current definitions in /hooks" % quoted)
+            integration_text = raw + json.dumps(_doctor_json(os.path.join(home, "hooks.json")))
+            if shutil.which("codex"):
+                plugins = config.get("plugins", {})
+                browser = any("browser" in n.lower() and isinstance(p, dict) and p.get("enabled") is True for n, p in plugins.items())
+                add("browser", "ok" if browser else "warn", "browser plugin enabled" if browser else "no enabled browser plugin detected in account config",
+                    "Open /plugins under this CODEX_HOME and install/enable the browser plugin")
+        except (OSError, ValueError, AttributeError, TypeError, KeyError):
+            integration_text = ""
+            add("hooks", "fail", "cannot parse account hook/config files", "Repair hooks.json/config.toml, then review /hooks")
+    if shutil.which("herdr"):
+        env = dict(os.environ, CODEX_HOME=home, CLAUDE_CONFIG_DIR=home)
+        try:
+            r = subprocess.run(["herdr", "integration", "status"], env=env, capture_output=True, text=True, timeout=10)
+            line = next((line for line in r.stdout.splitlines() if line.startswith(kind + ":")), "")
+            installed = bool(re.search(r": (?:current|installed|outdated)\b", line)) and "herdr" in integration_text.lower()
+            add("herdr", "ok" if installed else "warn", "Herdr state hook registered" if installed else "Herdr state hook missing or status unavailable for this account",
+                "With %s=%s, run herdr integration install %s, then review the account hook registration" % (VARS[kind], quoted, kind))
+        except (OSError, subprocess.TimeoutExpired):
+            add("herdr", "warn", "Herdr integration status unavailable", "Run herdr integration status under this account's environment")
+    return {"name": name, "agent": kind, "checks": checks}
+
+
+def cmd_doctor(args):
+    names = [a for a in args if not a.startswith("-")]
+    if set(args) - set(names) - {"--json"}:
+        err("usage: zorua doctor [name ...] [--json]")
+        return 1
+    # Never init/migrate the registry: even a first-run doctor is read-only.
+    acc = all_accounts()
+    if not os.path.exists(ACCOUNT_FILE):
+        acc.insert(0, ("default", os.path.join(HOME, ".codex"), "codex"))
+    providers = zp.load(CONFIG_DIR)
+    known = {n for n, _, _ in acc} | set(providers)
+    if any(n not in known for n in names):
+        err("zorua doctor: unknown name(s): " + " ".join(n for n in names if n not in known))
+        return 1
+    selected = set(names or known)
+    reports = []
+    for n, h, k in acc:
+        if n not in selected:
+            continue
+        try:
+            reports.append(doctor_account(n, h, k))
+        except OSError:
+            reports.append({"name": n, "agent": k, "checks": [{"check": "directory", "status": "fail", "detail": "cannot inspect account directory", "fix": "Check directory ownership and read permissions"}]})
+    order = sorted(selected & set(providers))
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        def check_provider(n):
+            if hasattr(zp, "check_stored"):
+                return zp.check_stored(n, providers[n])
+            return zp.check(providers[n])
+        results = {n: ex.submit(check_provider, n) for n in order}
+        for n, future in results.items():
+            res = future.result()
+            reports.append({"name": n, "agent": zp.agent(providers[n]), "checks": [{"check": "provider", "status": res["status"], "detail": res["detail"], "fix": "" if res["status"] == "ok" else "Check endpoint/key and run zorua provider check " + n}]})
+    if "--json" in args:
+        print(json.dumps({"accounts": reports}, ensure_ascii=False, indent=2))
+    else:
+        for report in reports:
+            print("[%s] (%s)" % (report["name"], report["agent"]))
+            for c in report["checks"]:
+                print("  %s %s: %s" % ("✓" if c["status"] == "ok" else "✗", c["check"], c["detail"]))
+                if c["fix"]:
+                    print("    fix: " + c["fix"])
+    return 1 if any(c["status"] == "fail" for r in reports for c in r["checks"]) else 0
 
 
 def claude_override_warning(home):
@@ -2081,6 +2314,7 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua tag <name> [+tag ...] [-tag ...]  view/edit account or provider labels
   zorua pick --kind codex|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]
                                 recommend by remaining 7d then 5h quota; shared emails use one pool
+  zorua doctor [name ...] [--json]  read-only login, permissions, proxy, hooks and provider checks
   zorua use <name>              switch this shell to <name> (sets CODEX_HOME or CLAUDE_CONFIG_DIR)
   zorua use -                   switch this shell back to default
   zorua <name> [args]           one-shot: run codex (or claude, for a Claude account) under that
@@ -2200,6 +2434,8 @@ def cmd_setup(st):
 # --------------------------------------------------------------------------
 
 def main(argv):
+    if argv[:1] == ["doctor"]:
+        return cmd_doctor(argv[1:])
     init_registry()
     st = State()
     sub = argv[0] if argv else "ls"

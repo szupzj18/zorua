@@ -187,6 +187,28 @@ and pick performs no additional provider check. It prints `provider:model-id` so
 result can be passed to `zorua use`. No candidates exits 1, including JSON output, with
 every excluded candidate and its reasons. Pick never changes the active account.
 
+## Check account environments
+
+```shell
+zorua doctor                    # every account and provider
+zorua doctor work alt --json     # named accounts, machine-readable results
+```
+
+Doctor reads configuration and never initializes or migrates the registry. It checks
+local Codex credentials/expiry, Claude `auth status`, directory ownership/permissions,
+private auth/settings files, Claude proxy settings and enabled Codex account hook trust.
+A missing proxy is a warning because some networks allow direct access. Providers use
+the existing check logic (including its one-token fallback when necessary). Failures
+exit 1 in both output formats; warnings alone exit 0. Each issue includes a repair hint.
+
+When available, Herdr integration status is checked under each account’s environment
+and compared with its hook registration; Codex browser plugin enablement is checked
+in account config. No hooks, services, installs or sign-ins are launched. Account
+command hooks are checked against normalized declaration hashes; plugin/MCP hook
+trust requires review in `/hooks`. Python 3.11+ also parses inline TOML hooks; earlier
+Python versions inspect `hooks.json` and trust tables and flag inline hooks for review.
+Project/managed hook layers and a browser’s live connection are outside this check.
+
 ## Project bindings
 
 Bind a repository to the account that owns it. Entering the directory (or any
@@ -312,6 +334,7 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua usage -v` / `zorua ls -v` | Detailed blocks per account (home, bars, credits) |
 | `zorua tag <name> [+tag …] [-tag …]` | View or edit account/provider labels in `tags.json` |
 | `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]` | Recommend an eligible account or provider, explain the choice and list alternatives |
+| `zorua doctor [name …] [--json]` | Read-only login, directory/file permissions, Claude proxy, Codex hook trust and provider connectivity checks, with repair hints |
 | `zorua setup` | Interactive first-run wizard |
 | `zorua add <name>` | Create a Codex account (new `CODEX_HOME`, sign-in) |
 | `zorua add --claude <name>` | Create a Claude Code account (new `CLAUDE_CONFIG_DIR`, sign-in; seeded from `claude-settings.json` if present) |
