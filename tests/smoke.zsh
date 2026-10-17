@@ -17,6 +17,12 @@ export HOME="$TMP/home"
 export ZDOTDIR="$HOME"
 export XDG_CONFIG_HOME="$TMP/config"
 mkdir -p "$HOME"
+export ZORUA_CONFIG_DIR="$XDG_CONFIG_HOME/zorua"
+unset ZORUA_TEST_KEYCHAIN
+mkdir -p "$TMP/safety-bin"
+cp "$ROOT/tests/fake-security" "$TMP/safety-bin/security"
+chmod +x "$TMP/safety-bin/security"
+export PATH="$TMP/safety-bin:$PATH"
 
 n=0
 ok() { n=$((n + 1)); print -P -- "%F{green}ok%f $1"; }
@@ -272,9 +278,9 @@ not_contains "$(zorua provider ls)" "glm " "provider rm"
 out=$(zorua provider get kimi)
 contains "$out" '"agent": "claude"' "provider get: agent"
 not_contains "$out" "sk-kimi-secret-123456" "provider get masks the key"
-contains "$(zorua provider get kimi --reveal)" "sk-kimi-secret-123456" "provider get --reveal"
+not_contains "$(zorua provider get kimi --reveal)" "sk-kimi-secret-123456" "provider get --reveal"
 zorua provider get kimi | zorua provider put kimi >/dev/null
-contains "$(zorua provider get kimi --reveal)" "sk-kimi-secret-123456" "a masked document keeps the stored key"
+not_contains "$(zorua provider get kimi --reveal)" "sk-kimi-secret-123456" "a masked document keeps the stored key"
 zorua provider get kimi --reveal | sed 's#"ANTHROPIC_BASE_URL": "[^"]*"#"ANTHROPIC_BASE_URL": "https://kimi2.example.com"#' | zorua provider put kimi >/dev/null
 contains "$(zorua provider show kimi)" "kimi2.example.com" "provider put changes the base URL"
 [[ -f "$XDG_CONFIG_HOME/zorua/providers.json.bak" ]] || die "provider put must keep providers.json.bak"

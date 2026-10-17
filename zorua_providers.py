@@ -18,6 +18,10 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
+import tempfile
+import copy
 import time
 import urllib.error
 import urllib.request
@@ -51,11 +55,15 @@ def load(cfg):
 
 def _write_private(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=".zorua-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def save(cfg, providers):
@@ -79,6 +87,87 @@ def secret(p):
     if agent(p) == "claude":
         return p["env"].get(key_var(p["env"]), "")
     return p.get("key", "")
+
+
+def key_storage(p):
+    return "macOS Keychain (service zorua)" if p.get("key_ref") == "keychain" else "providers.json (0600)"
+
+
+def _security(args):
+    # Never expose stderr: security errors can contain the password argument.
+    try:
+        return subprocess.run(["security"] + args, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def store_key(name, p, key, require_keychain=False):
+    """Return a stored copy. Only explicit key changes/migration call this, never load/save."""
+    _text(key, "API key")
+    out = copy.deepcopy(p)
+    var = key_var(out.get("env", {})) or out.get("key_var") or "ANTHROPIC_AUTH_TOKEN"
+    if agent(out) == "claude" and sum(bool(out["env"].get(v)) for v in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")) > 1:
+        raise RuntimeError("provider has two auth keys; keep only one auth variable before storing/migrating")
+    r = _security(["add-generic-password", "-s", "zorua", "-a", name, "-w", key, "-U"]) if sys.platform == "darwin" else None
+    if r is not None and r.returncode == 0:
+        out["key_ref"] = "keychain"
+        out.pop("key", None)
+        if agent(out) == "claude":
+            out["key_var"] = var
+            out["env"].pop(var, None)
+    else:
+        if require_keychain:
+            raise RuntimeError("macOS Keychain unavailable; original file kept")
+        out.pop("key_ref", None)
+        out.pop("key_var", None)
+        if agent(out) == "claude":
+            out["env"][var] = key
+        else:
+            out["key"] = key
+    return out
+
+
+def resolve_key(name, p):
+    """Hydrate only for launching/checking/editing; listing never queries the Keychain.
+    A missing/locked reference fails closed, rather than launching with an empty key."""
+    out = copy.deepcopy(p)
+    if out.get("key_ref") != "keychain":
+        return out
+    r = _security(["find-generic-password", "-s", "zorua", "-a", name, "-w"]) if sys.platform == "darwin" else None
+    if r is None or r.returncode or not r.stdout.rstrip("\n"):
+        raise RuntimeError("Keychain key unavailable for %s; unlock Keychain or run zorua provider set-key %s" % (name, name))
+    key = r.stdout.rstrip("\n")
+    if agent(out) == "claude":
+        out["env"][out.get("key_var", "ANTHROPIC_AUTH_TOKEN")] = key
+    else:
+        out["key"] = key
+    return out
+
+
+def check_stored(name, p):
+    try:
+        return check(resolve_key(name, p))
+    except RuntimeError as e:
+        return {"status": "fail", "http": None, "ms": 0, "via": "Keychain", "detail": str(e)}
+
+
+def migrate_keys(cfg, dry=False):
+    """Explicit, backed-up migration; never invoked automatically."""
+    provs = load(cfg)
+    names = [n for n, p in provs.items() if secret(p) and p.get("key_ref") != "keychain"]
+    if dry or not names:
+        return names
+    # Unique backups survive reruns and subsequent provider put operations.
+    with open(_file(cfg)) as f:
+        original = f.read()
+    fd, path = tempfile.mkstemp(prefix="providers.json.migrate-", suffix=".bak", dir=cfg)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(original)
+    for name in names:
+        provs[name] = store_key(name, provs[name], secret(provs[name]), require_keychain=True)
+    save(cfg, provs)
+    return names
 
 
 def model_summary(p):
@@ -176,7 +265,7 @@ def fetch_models(p, timeout=15):
     except urllib.error.HTTPError as e:
         raise RuntimeError("HTTP %d from %s" % (e.code, models_url(p).split("?")[0]))
     except Exception as e:
-        raise RuntimeError("%s: %s" % (models_url(p).split("?")[0], getattr(e, "reason", e)))
+        raise RuntimeError("%s: %s" % (models_url(p).split("?")[0], _reply_message(str(getattr(e, "reason", e)), p)))
     ids = [m.get("id") for m in (data.get("data") or []) if isinstance(m, dict)]
     return [i for i in ids if i]
 
@@ -200,9 +289,9 @@ def _reply_message(raw, p):
         raw = m if isinstance(m, str) else raw
     except (ValueError, AttributeError):
         pass
-    text = " ".join(str(raw).split())[:120]
     key = secret(p)
-    return text.replace(key, "***") if key else text
+    text = str(raw).replace(key, "***") if key else str(raw)
+    return " ".join(text.split())[:120]
 
 
 def _send(req, timeout):
@@ -272,7 +361,7 @@ def is_secret(var):
 
 
 def mask(value):
-    return value[:3] + "…" + value[-4:] if len(value) > 12 else "***"
+    return "***"
 
 
 def shown(var, value):
@@ -291,7 +380,7 @@ def build_env(base_url, key, api_key=False, models=(), extra=()):
     for spec in extra:
         var, sep, val = spec.partition("=")
         if not sep or not re.match(r"^[A-Z_][A-Z0-9_]*$", var):
-            raise ValueError("--env needs VAR=VALUE (VAR in capitals), got %r" % spec)
+            raise ValueError("--env needs VAR=VALUE (VAR in capitals)")
         env[var] = val
     return env
 
@@ -352,11 +441,14 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def document(p, reveal=False):
-    """-> the editable view of provider p; secrets are masked unless reveal"""
+    """Editable view; even the legacy reveal flag never returns a secret."""
+    reveal = False
     if agent(p) == "claude":
-        env = {var: val if reveal else shown(var, val) for var, val in p["env"].items()}
+        env = {var: shown(var, val) for var, val in p["env"].items()}
+        if p.get("key_ref") == "keychain":
+            env[p.get("key_var", "ANTHROPIC_AUTH_TOKEN")] = "***"
         return {"agent": "claude", "env": env, "models": models(p)}
-    key = p.get("key", "")
+    key = "***" if p.get("key_ref") == "keychain" else p.get("key", "")
     return {"agent": "codex", "base_url": p.get("base_url", ""), "key": key if reveal or not key else mask(key),
             "model": p.get("model", ""), "wire_api": p.get("wire_api", "responses"), "models": models(p)}
 

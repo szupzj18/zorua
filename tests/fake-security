@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Keychain double. With no explicit temp store, fail without touching any Keychain."""
+import json
+import os
+import sys
+from pathlib import Path
+
+path = os.environ.get('ZORUA_TEST_KEYCHAIN')
+if not path or os.environ.get('ZORUA_TEST_KEYCHAIN_FAIL'):
+    sys.stderr.write('test Keychain unavailable')
+    sys.exit(1)
+p = Path(path)
+data = json.loads(p.read_text()) if p.exists() else {}
+a = sys.argv[1:]
+account = a[a.index('-a') + 1]
+if a[0] == 'add-generic-password':
+    data[account] = a[a.index('-w') + 1]
+    p.write_text(json.dumps(data))
+    p.chmod(0o600)
+elif a[0] == 'find-generic-password' and account in data:
+    print(data[account])
+else:
+    sys.exit(1)

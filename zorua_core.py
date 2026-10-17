@@ -74,8 +74,7 @@ class Emitter:
     def flush(self):
         path = os.environ.get("ZORUA_EVAL_FILE")
         if path and self.lines:
-            with open(path, "w") as f:
-                f.write("\n".join(self.lines) + "\n")
+            zp._write_private(path, "\n".join(self.lines) + "\n")
 
 
 EMIT = Emitter()
@@ -206,6 +205,7 @@ PROVIDER_AGENT = {"claude_provider": "claude", "codex_provider": "codex"}
 # The model picked inside the active provider of each agent (an alias from the provider's catalog).
 MODEL_VAR = {"claude_provider": "ZORUA_CLAUDE_MODEL", "codex_provider": "ZORUA_CODEX_MODEL"}
 AGENT_PROVIDER = {a: k for k, a in PROVIDER_AGENT.items()}
+PROVIDER_KEY_VAR = {"claude_provider": "ZORUA_CLAUDE_KEY", "codex_provider": zp.CODEX_KEY_VAR}
 
 
 def is_provider(kind):
@@ -316,6 +316,12 @@ class State:
         self.model = {k: os.environ.get(v, "") for k, v in MODEL_VAR.items()}
 
     def set_home(self, kind, home):
+        if kind in PROVIDER_KEY_VAR:
+            if home:
+                prov = zp.resolve_key(home, zp.load(CONFIG_DIR)[home])
+                EMIT.export(PROVIDER_KEY_VAR[kind], zp.secret(prov))
+            else:
+                EMIT.unset(PROVIDER_KEY_VAR[kind])
         self.home[kind] = home or ""
         if home:
             EMIT.export(VARS[kind], home)
@@ -1131,7 +1137,7 @@ def _provider_for(agent, name):
     if prov is None or zp.agent(prov) != agent:
         err("zorua: %s provider '%s' not found; running plain %s" % (agent, name, agent))
         return None
-    return prov
+    return zp.resolve_key(name, prov)
 
 
 def _chosen_model(prov, sel):
@@ -1250,7 +1256,7 @@ def provider_add(args):
         return 1
     provs = zp.load(CONFIG_DIR)
     zp.add_models(prov, [prov["model"]] if codex else zp.env_models(prov["env"]))
-    provs[name] = prov
+    provs[name] = zp.store_key(name, prov, zp.secret(prov))
     zp.save(CONFIG_DIR, provs)
     print("added %s provider: %s -> %s  (zorua use %s, or: zorua %s)" % (zp.agent(prov), name, zp.endpoint(prov), name, name))
     return 0
@@ -1299,8 +1305,9 @@ def provider_show(args):
         return 1
     p = provs[name]
     print("agent=%s" % zp.agent(p))
+    print("key_storage=%s" % zp.key_storage(p))
     items = p["env"] if zp.agent(p) == "claude" else {k: v for k, v in p.items() if k != "kind"}
-    for var, val in sorted((k, v) for k, v in items.items() if k != "models"):
+    for var, val in sorted((k, v) for k, v in items.items() if k not in ("models", "key_ref", "key_var")):
         print("%s=%s" % (var, zp.shown(var, val)))
     for alias, mid in zp.models(p).items():
         print("model %s = %s" % (alias, mid))
@@ -1308,7 +1315,7 @@ def provider_show(args):
 
 
 def provider_get(args):
-    """JSON view of one provider for front ends; secrets are masked unless --reveal."""
+    """JSON view for front ends; the legacy --reveal flag is always masked too."""
     names = [a for a in args if not a.startswith("-")]
     provs = zp.load(CONFIG_DIR)
     if len(names) != 1 or names[0] not in provs or set(args) - set(names) - {"--reveal"}:
@@ -1327,12 +1334,13 @@ def provider_put(args):
         return 1
     try:
         doc = json.loads(sys.stdin.read())
-        new = zp.from_document(provs[name], doc)
+        old = zp.resolve_key(name, provs[name])
+        new = zp.from_document(old, doc)
     except ValueError as e:
         err("zorua provider put: %s" % e)
         return 1
     zp.backup(CONFIG_DIR)
-    provs[name] = new
+    provs[name] = zp.store_key(name, new, zp.secret(new))
     zp.save(CONFIG_DIR, provs)
     print("updated provider: %s -> %s" % (name, zp.endpoint(new)))
     return 0
@@ -1348,7 +1356,7 @@ def provider_check(args):
         return 1
     as_json = "--json" in args
     if len(names) == 1:
-        res = zp.check(provs[names[0]])
+        res = zp.check_stored(names[0], provs[names[0]])
         res["checked_at"] = int(time.time())
         if as_json:
             print(json.dumps(res, ensure_ascii=False))
@@ -1361,7 +1369,7 @@ def provider_check(args):
         print("{}" if as_json else "(no providers yet — zorua provider add <name> --base-url URL, or: zorua provider import cc-switch)")
         return 0
     with ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {n: ex.submit(zp.check, provs[n]) for n in order}
+        futs = {n: ex.submit(zp.check_stored, n, provs[n]) for n in order}
         results = {n: dict(futs[n].result(), checked_at=int(time.time())) for n in order}
     if as_json:
         print(json.dumps(results, ensure_ascii=False))
@@ -1417,7 +1425,7 @@ def provider_models(args):
         p["models"] = cat
     elif action == "fetch":
         try:
-            ids = zp.fetch_models(p)
+            ids = zp.fetch_models(zp.resolve_key(name, p))
         except RuntimeError as e:
             err("zorua: could not fetch models: %s" % e)
             return 1
@@ -1462,6 +1470,7 @@ def provider_import(args):
         return 1
     provs = zp.load(CONFIG_DIR)
     added = 0
+    imported = []
     for display, prov in found:
         name = zp.sanitize_name(display)
         if not valid_name(name):
@@ -1477,12 +1486,44 @@ def provider_import(args):
                                           zp.mask(zp.secret(prov))))
         provs[name] = prov        # in memory even for --dry-run, so later entries see earlier names
         added += 1
+        imported.append(name)
     if added and not dry:
+        for name in dict.fromkeys(imported):
+            p = provs[name]
+            provs[name] = zp.store_key(name, p, zp.secret(p))
         zp.save(CONFIG_DIR, provs)
     if not found:
         print("no custom providers with their own key found in cc-switch")
     elif not dry:
         print("imported %d provider(s); cc-switch was only read, nothing in it changed" % added)
+    return 0
+
+
+def provider_set_key(args):
+    provs = zp.load(CONFIG_DIR)
+    if len(args) != 1 or args[0] not in provs:
+        err("usage: zorua provider set-key <name>")
+        return 1
+    name = args[0]
+    key = read_key("", "")
+    if not key:
+        err("zorua: no API key given")
+        return 1
+    provs[name] = zp.store_key(name, provs[name], key)
+    zp.save(CONFIG_DIR, provs)
+    print("updated key: %s (%s)" % (name, zp.key_storage(provs[name])))
+    return provider_check([name])
+
+
+def provider_migrate_keys(args):
+    if args not in ([], ["--dry-run"]):
+        err("usage: zorua provider migrate-keys [--dry-run]")
+        return 1
+    names = zp.migrate_keys(CONFIG_DIR, "--dry-run" in args)
+    for name in names:
+        print("%s %s -> macOS Keychain" % ("would migrate" if args else "migrated", name))
+    if not names:
+        print("no plaintext provider keys to migrate")
     return 0
 
 
@@ -1497,6 +1538,10 @@ def cmd_provider(args):
         return provider_rm(rest)
     if sub == "show":
         return provider_show(rest)
+    if sub == "set-key":
+        return provider_set_key(rest)
+    if sub == "migrate-keys":
+        return provider_migrate_keys(rest)
     if sub == "check":
         return provider_check(rest)
     if sub == "get":
@@ -1790,6 +1835,9 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
                                 add a third-party Claude Code endpoint (key is prompted if omitted)
   zorua provider add <name> --codex --base-url URL --model ID [--wire-api responses]
                                 add a third-party Codex endpoint
+  zorua provider set-key <name> rotate a key (hidden input or stdin), then check the endpoint
+  zorua provider migrate-keys [--dry-run]
+                                back up providers.json (0600), then move plaintext keys to Keychain
   zorua provider ls|show|rm     list / show (keys masked) / remove providers
   zorua provider models <name> [add <model-id> [alias] | rm <alias> | fetch]
                                 a provider can hold many models; fetch asks its endpoint for the list
@@ -1973,5 +2021,8 @@ def main(argv):
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv[1:]))
+    except (RuntimeError, OSError) as e:
+        err("zorua: %s" % e)
+        sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)

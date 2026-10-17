@@ -5,8 +5,7 @@ import { readProvider, readRegistry, ZoruaError } from "@/lib/zorua";
 const NAME = /^[A-Za-z0-9_-]{1,32}$/;
 
 /**
- * POST (not GET) so the write guard applies: a revealed key is only returned to a same-origin
- * request that carries the custom header.
+ * POST so the same-origin guard also applies to provider metadata. Keys stay masked.
  */
 export async function POST(request: Request) {
   await connection();

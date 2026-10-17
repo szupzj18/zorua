@@ -202,6 +202,27 @@ zorua bind deepseek        # this directory switches to deepseek automatically
 zorua provider import cc-switch --dry-run     # preview copying providers out of cc-switch
 ```
 
+### Key storage and rotation
+
+New and rotated provider keys use macOS Keychain (service `zorua`, account = provider
+name). `providers.json` holds `"key_ref": "keychain"`; switching resolves the key
+into a private shell environment (`ZORUA_CODEX_KEY` / `ZORUA_CLAUDE_KEY`). Launching,
+checking and editing also resolve it as needed so rotation takes effect immediately. Other systems, or unavailable Keychain,
+use the existing JSON format with mode 0600. `provider show` reports `key_storage`.
+
+```shell
+zorua provider set-key relay                 # hidden input on a terminal, otherwise stdin; checks the new key
+zorua provider migrate-keys --dry-run        # preview; no Keychain or file writes
+zorua provider migrate-keys                  # explicit migration after upgrading
+```
+
+Migration first keeps a unique `providers.json.migrate-*.bak` (0600). It leaves
+the original config intact if Keychain fails; backups contain the old plaintext
+and can be removed once the migration is verified. Existing keys stay in their
+current storage until explicitly changed or migrated. A locked/missing Keychain
+reference fails with a repair hint. Listing and JSON output never reveal keys,
+including the legacy `provider get --reveal` spelling.
+
 ### Many models per provider
 
 A relay often serves a dozen models. A provider keeps a catalog of them, and each terminal
@@ -276,7 +297,9 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua <name> [args…]` | One-shot: run `codex` or `claude` under that account |
 | `zorua bind [name]` / `unbind [dir]` / `binds` | Manage directory bindings |
 | `zorua provider add\|ls\|show\|rm\|import` | Manage third-party Claude Code and Codex providers (see above) |
-| `zorua provider get <name> [--reveal]` / `put <name>` | One provider as JSON (keys masked unless `--reveal`) / replace it from JSON on stdin; `put` keeps `providers.json.bak`. The web dashboard edits providers through these |
+| `zorua provider get <name> [--reveal]` / `put <name>` | One provider as JSON (keys always masked, including the legacy `--reveal` flag) / replace it from JSON on stdin; `put` keeps `providers.json.bak`. The web dashboard edits providers through these |
+| `zorua provider set-key <name>` | Rotate a key from hidden input or stdin, then check it |
+| `zorua provider migrate-keys [--dry-run]` | Back up the config (0600), then migrate plaintext keys into Keychain |
 | `zorua provider check [name …] [--json]` | Is the endpoint reachable and the key accepted? `GET` the model list (free); an Anthropic endpoint without one gets a one-token message request. Prints ok / warn / fail with the HTTP status and latency; an empty balance (HTTP 402, or a quota 429) is a fail. Without a name it checks every provider in parallel and prints one row each; exits 1 if any failed. Never prints the key. The web dashboard's **check** buttons run it |
 | `zorua use <provider>[:<model>]` / `zorua <provider>[:<model>] [args…]` | Switch this shell to a provider (and a model of it) / one-shot run |
 | `zorua model [alias\|-]` | List / pick / clear the model of the active provider |
@@ -311,7 +334,7 @@ serves every shell.
 
 **[Try it live](https://szupzj18.github.io/zorua/demo/)**: the real dashboard running in your browser on made-up data (nothing leaves the page).
 
-`web/` holds a small local dashboard (Next.js + Tailwind CSS) for accounts, 5h/7d usage, providers and directory bindings, with add/remove/sign-in and a provider editor (env variables, key, model catalog; copy a key without showing it). Dark by default, light follows the system. It reads `zorua usage --json`, listens on `127.0.0.1:4747` only and runs the matching `zorua` commands for changes. See [web/README.md](web/README.md).
+`web/` holds a small local dashboard (Next.js + Tailwind CSS) for accounts, 5h/7d usage, providers and directory bindings, with add/remove/sign-in and a provider editor (env variables, key rotation, model catalog). Dark by default, light follows the system. It reads `zorua usage --json`, listens on `127.0.0.1:4747` only and runs the matching `zorua` commands for changes. See [web/README.md](web/README.md).
 
 ## Files and configuration
 
@@ -321,7 +344,7 @@ serves every shell.
 ~/.config/zorua/claude-accounts.tsv    Claude Code accounts <name>\t<CLAUDE_CONFIG_DIR>
 ~/.config/zorua/claude-settings.json   optional template copied to a new Claude account's settings.json (e.g. proxy env); never overwrites
 ~/.config/zorua/bindings.tsv           directory bindings   <name>\t<path>
-~/.config/zorua/providers.json         Claude Code and Codex providers incl. API keys (mode 0600); run/<name>.settings.json is generated
+~/.config/zorua/providers.json         Claude Code and Codex providers with Keychain references on macOS (file fallback mode 0600); run/<name>.settings.json is generated
 ~/.codex  ~/.codex-<name>/             Codex homes     (untouched)
 ~/.claude-<name>/                      Claude Code config directories
 ```

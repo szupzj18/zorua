@@ -31,6 +31,9 @@ jobs:
           sh -n uninstall.sh
           sh -n web/launchd/zorua-web.sh
 
+      - name: Provider key tests (isolated HOME and fake Keychain)
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
       - name: zsh smoke tests
         run: zsh tests/smoke.zsh
 

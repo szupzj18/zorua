@@ -7,6 +7,12 @@ set -l root (dirname (dirname (realpath (status filename))))
 set -l tmp (mktemp -d)
 set -gx HOME $tmp/home
 set -gx XDG_CONFIG_HOME $tmp/config
+set -gx ZORUA_CONFIG_DIR $tmp/config/zorua
+set -e ZORUA_TEST_KEYCHAIN
+mkdir -p $tmp/safety-bin
+cp $root/tests/fake-security $tmp/safety-bin/security
+chmod +x $tmp/safety-bin/security
+set -gx PATH $tmp/safety-bin $PATH
 set -e CODEX_HOME
 mkdir -p $HOME
 

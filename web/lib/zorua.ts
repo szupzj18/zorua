@@ -105,7 +105,7 @@ export async function readRegistry(): Promise<ZoruaState> {
   return JSON.parse(await runCore(["ls", "--json"])) as ZoruaState;
 }
 
-/** One provider's editable document; secrets are masked unless `reveal`. */
+/** One provider's editable document; secrets are always masked (including legacy `reveal`). */
 export async function readProvider(name: string, reveal: boolean): Promise<ProviderDoc> {
   const out = await runCore(["provider", "get", name, ...(reveal ? ["--reveal"] : [])], { timeout: 15_000 });
   try {
