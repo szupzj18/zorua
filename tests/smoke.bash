@@ -10,6 +10,12 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config"
 unset CODEX_HOME ZORUA_AUTO_ACTIVE CLAUDE_CONFIG_DIR ZORUA_AUTO_CLAUDE ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
 mkdir -p "$HOME"
+export ZORUA_CONFIG_DIR="$XDG_CONFIG_HOME/zorua"
+unset ZORUA_TEST_KEYCHAIN
+mkdir -p "$TMP/safety-bin"
+cp "$ROOT/tests/fake-security" "$TMP/safety-bin/security"
+chmod +x "$TMP/safety-bin/security"
+export PATH="$TMP/safety-bin:$PATH"
 
 n=0
 ok() { n=$((n + 1)); echo "ok $1"; }
@@ -325,7 +331,7 @@ ok "hook install / remove restores the original status line"
 OLDCFG="$TMP/mig/config"; mkdir -p "$OLDCFG/codex-switch" "$TMP/mig/home/.codex-legacy"
 printf 'default\t%s\nlegacy\t%s\n' "$TMP/mig/home/.codex" "$TMP/mig/home/.codex-legacy" > "$OLDCFG/codex-switch/accounts.tsv"
 printf 'legacy\t%s\n' "$TMP/mig/proj" > "$OLDCFG/codex-switch/bindings.tsv"
-out=$(HOME="$TMP/mig/home" XDG_CONFIG_HOME="$OLDCFG" python3 "$ROOT/zorua_core.py" ls)
+out=$(HOME="$TMP/mig/home" ZORUA_CONFIG_DIR= XDG_CONFIG_HOME="$OLDCFG" python3 "$ROOT/zorua_core.py" ls)
 contains "$out" "legacy" "accounts carried over from the old config dir"
 [ -f "$OLDCFG/zorua/bindings.tsv" ] || die "bindings not carried over"
 [ -f "$OLDCFG/codex-switch/accounts.tsv" ] || die "old config must be kept as a backup"

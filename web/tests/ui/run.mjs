@@ -147,6 +147,7 @@ try {
     });
     await p.goto(BASE + "/#/provider/kimi", { waitUntil: "networkidle0" });
     await until(() => p.$("textarea"));
+    ok("provider keys have no reveal/export controls", await p.evaluate(() => ![...document.querySelectorAll("button")].some((b) => /show keys|copy key/i.test(b.textContent))));
     await setField(p, 0, "https://api.example.com/x");
     await sleep(100);
     await (await navButton(p, "Overview")).asElement().click();

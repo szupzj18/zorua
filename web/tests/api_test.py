@@ -78,7 +78,7 @@ check("provider doc is masked", s == 200 and KEY not in json.dumps(r) and doc["e
 check("provider doc needs Origin", prov("kimi2", headers={"Content-Type": "application/json", "X-Zorua-Web": "1"})[0] == 403)
 check("provider doc needs custom header", prov("kimi2", headers={"Content-Type": "application/json", "Origin": B})[0] == 403)
 check("provider doc unknown 400", prov("zzz")[0] == 400)
-s, full = prov("kimi2", reveal=True); check("reveal returns the key", s == 200 and full["doc"]["env"]["ANTHROPIC_AUTH_TOKEN"] == KEY)
+s, full = prov("kimi2", reveal=True); check("legacy reveal stays masked", s == 200 and KEY not in json.dumps(full))
 before = open(ROOT + "/cfg/providers.json").read()
 s, r = post({"action":"provider.save","name":"kimi2","doc":doc}); check("saving the masked doc keeps the key", s == 200 and json.load(open(ROOT + "/cfg/providers.json"))["providers"]["kimi2"]["env"]["ANTHROPIC_AUTH_TOKEN"] == KEY, r)
 edited = json.loads(json.dumps(doc)); edited["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "64000"; edited["models"]["big"] = "kimi-k2-big"

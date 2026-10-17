@@ -152,8 +152,6 @@ export function ProviderPage({
   onRemove: () => void;
 }) {
   const [base, setBase] = useState<ProviderDoc | null>(null); // as stored (secrets masked)
-  const [open, setOpen] = useState<ProviderDoc | null>(null); // same, secrets revealed
-  const [revealed, setRevealed] = useState(false);
   const [env, setEnv] = useState<Row[]>([]);
   const [cat, setCat] = useState<Row[]>([]);
   const [codex, setCodex] = useState({ base_url: "", key: "", model: "", wire_api: "responses" });
@@ -185,33 +183,10 @@ export function ProviderPage({
     };
   }, [name, apply]);
 
-  /** Swap masked secrets for the real values (and back) wherever the user has not edited them. */
-  const toggleReveal = async () => {
-    if (!base) return;
-    setError(null);
-    try {
-      const full = open ?? (await fetchDoc(name, true));
-      setOpen(full);
-      const [from, to] = revealed ? [full, base] : [base, full];
-      if (base.agent === "claude" && from.agent === "claude" && to.agent === "claude") {
-        setEnv((cur) => cur.map((r) => (isSecret(r.k) && r.v === from.env[r.k] ? { ...r, v: to.env[r.k] ?? r.v } : r)));
-      } else if (base.agent === "codex" && from.agent === "codex" && to.agent === "codex") {
-        setCodex((c) => (c.key === from.key ? { ...c, key: to.key } : c));
-      }
-      setRevealed(!revealed);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  /** What to copy for a secret: the stored value when the field still shows its masked form, else what was typed. */
-  const copyValue = async (shown: string, masked: string | undefined, real: (d: ProviderDoc) => string | undefined) => {
-    if (masked === undefined || shown !== masked) return shown;
-    const full = open ?? (await fetchDoc(name, true));
-    setOpen(full);
-    const v = real(full);
-    if (v === undefined) throw new Error("no such value");
-    return v;
+  /** Stored secrets cannot be exported. Freshly typed values can still be copied. */
+  const copyValue = async (shown: string, masked: string | undefined) => {
+    if (masked !== undefined && shown === masked) throw new Error("Stored keys stay masked; enter a replacement to rotate the key.");
+    return shown;
   };
 
   const keyVar = keyVarOf(env);
@@ -257,8 +232,7 @@ export function ProviderPage({
     }
   }, [base, cat, env, codex]);
 
-  // Compare against what is stored: masked while hidden, real values once revealed.
-  const reference = revealed ? open : base;
+  const reference = base;
   const dirty = built.doc !== null && reference !== null && canon(built.doc) !== canon(reference);
 
   // An edit whose save is already on its way is not "unsaved": leaving the page right after a field loses
@@ -291,8 +265,6 @@ export function ProviderPage({
       // its masked form unless it was edited again meanwhile; ids are kept so no field loses focus.
       const stored = await fetchDoc(name, false);
       setBase(stored);
-      setOpen(null);
-      setRevealed(false);
       if (sent.agent === "claude" && stored.agent === "claude") {
         setEnv((cur) => cur.map((r) => (isSecret(r.k) && r.v === sent.env[r.k] && stored.env[r.k] !== undefined ? { ...r, v: stored.env[r.k] } : r)));
       } else if (sent.agent === "codex" && stored.agent === "codex") {
@@ -350,9 +322,6 @@ export function ProviderPage({
         <CheckBadge check={check} checking={checking} onCheck={onCheck} />
         <span className="ml-auto flex flex-wrap items-center gap-2">
           <CopyButton variant="action" text="copy command" label={`zorua use ${name}`} get={async () => `zorua use ${name}`} />
-          <button type="button" className={actionBtn} onClick={toggleReveal}>
-            {revealed ? "hide keys" : "show keys"}
-          </button>
           <button type="button" className={dangerBtn} onClick={onRemove}>
             remove provider
           </button>
@@ -360,7 +329,7 @@ export function ProviderPage({
       </div>
       <p className="mt-3 text-xs leading-relaxed text-dim">
         {claude ? "What `claude` runs with while this provider is active." : "Codex gets this endpoint, key and model through -c overrides."} Changes are saved when you leave a field; the previous file is kept as
-        providers.json.bak. Keys are masked until <b className="text-fg">show keys</b>.
+        providers.json.bak. Stored keys stay masked; enter a replacement key to rotate it.
       </p>
 
       {failure && (
@@ -386,7 +355,6 @@ export function ProviderPage({
                   <span className="min-w-0 flex-1">
                     <Value label="key" className="text-warn" value={get(keyVar)} onChange={(v) => setVar(keyVar, v)} />
                   </span>
-                  <CopyButton label="copy key" get={() => copyValue(get(keyVar), base.agent === "claude" ? base.env[keyVar] : undefined, (d) => (d.agent === "claude" ? d.env[keyVar] : undefined))} />
                 </span>
               </Labeled>
               <div className="mt-1 border-t border-line pt-3 text-xs text-dim">Models Claude Code asks for; leave a line empty to use its default.</div>
@@ -411,7 +379,6 @@ export function ProviderPage({
                   <span className="min-w-0 flex-1">
                     <Value label="key" className="text-warn" value={codex.key} onChange={(v) => setCodex({ ...codex, key: v })} />
                   </span>
-                  <CopyButton label="copy key" get={() => copyValue(codex.key, base.agent === "codex" ? base.key : undefined, (d) => (d.agent === "codex" ? d.key : undefined))} />
                 </span>
               </Labeled>
               <Labeled label="model" hint="what Codex sends when no model is picked">
@@ -454,7 +421,7 @@ export function ProviderPage({
                 keyLabel="variable"
                 valueLabel="value"
                 addLabel="add variable"
-                copy={(r) => copyValue(r.v, base.agent === "claude" ? base.env[r.k] : undefined, (d) => (d.agent === "claude" ? d.env[r.k] : undefined))}
+                copy={(r) => copyValue(r.v, base.agent === "claude" && isSecret(r.k) ? base.env[r.k] : undefined)}
               />
             </div>
           </details>

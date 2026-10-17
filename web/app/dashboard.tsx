@@ -402,7 +402,7 @@ export default function Dashboard() {
         </div>
 
         <footer className="mt-12 border-t border-line pt-4 text-xs leading-relaxed text-dim">
-          Data comes from <code className="text-fg">zorua usage --json</code>; changes run the matching <code className="text-fg">zorua</code> command. Account tokens never reach this page; a provider key is sent only when you press “show keys”.
+          Data comes from <code className="text-fg">zorua usage --json</code>; changes run the matching <code className="text-fg">zorua</code> command. Account tokens never reach this page; stored provider keys always stay masked.
         </footer>
       </main>
 
