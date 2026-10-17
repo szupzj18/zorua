@@ -163,6 +163,30 @@ zorua hook install alt --shadows     # also wrap a status line that hides the re
   missing, so a status line never breaks.
 - `sh uninstall.sh --purge` restores all status lines automatically.
 
+## Recommend an account
+
+```shell
+zorua tag work +internal +browser
+zorua tag relay +external
+zorua pick --kind codex --needs internal,browser --avoid external --json
+zorua pick --kind claude --model claude-opus
+```
+
+Tags are explicit labels; Zorua does not infer data access permissions. Recommendations
+rank remaining weekly quota first, then 5h quota. Accounts sharing an email use one
+quota pool and produce one recommendation. Unknown quota ranks after known quota; an
+exhausted known window excludes the account. Expired login tokens are excluded.
+Codex usage requests share a 30-second cache with `usage` and run once per email pool;
+Claude usage comes from the existing status-line cache.
+
+`--model` matches a full ID, alias or unique prefix. Subscription accounts require local
+evidence: Codex `models_cache.json`/configured `model`, or Claude settings `model`/env
+model mapping. Missing catalogs are excluded when a model is requested. Providers use
+the configured key and model catalog; opaque key expiry and provider quota are unknown,
+and pick performs no additional provider check. It prints `provider:model-id` so the
+result can be passed to `zorua use`. No candidates exits 1, including JSON output, with
+every excluded candidate and its reasons. Pick never changes the active account.
+
 ## Project bindings
 
 Bind a repository to the account that owns it. Entering the directory (or any
@@ -286,6 +310,8 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua` / `zorua ls` | List accounts: email and plan (`-v`: home directory; `--expiry`: Codex subscription end date) |
 | `zorua usage` | The same with live 5h / 7d usage bars |
 | `zorua usage -v` / `zorua ls -v` | Detailed blocks per account (home, bars, credits) |
+| `zorua tag <name> [+tag …] [-tag …]` | View or edit account/provider labels in `tags.json` |
+| `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]` | Recommend an eligible account or provider, explain the choice and list alternatives |
 | `zorua setup` | Interactive first-run wizard |
 | `zorua add <name>` | Create a Codex account (new `CODEX_HOME`, sign-in) |
 | `zorua add --claude <name>` | Create a Claude Code account (new `CLAUDE_CONFIG_DIR`, sign-in; seeded from `claude-settings.json` if present) |
@@ -343,6 +369,8 @@ serves every shell.
 ~/.config/zorua/accounts.tsv           Codex accounts       <name>\t<CODEX_HOME>
 ~/.config/zorua/claude-accounts.tsv    Claude Code accounts <name>\t<CLAUDE_CONFIG_DIR>
 ~/.config/zorua/claude-settings.json   optional template copied to a new Claude account's settings.json (e.g. proxy env); never overwrites
+~/.config/zorua/tags.json              explicit labels by account/provider name
+~/.config/zorua/usage-cache.json       shared 30-second Codex usage cache (0600; no tokens)
 ~/.config/zorua/bindings.tsv           directory bindings   <name>\t<path>
 ~/.config/zorua/providers.json         Claude Code and Codex providers with Keychain references on macOS (file fallback mode 0600); run/<name>.settings.json is generated
 ~/.codex  ~/.codex-<name>/             Codex homes     (untouched)

@@ -72,6 +72,6 @@ end
 _zorua_run apply $PWD
 
 complete -c zorua -f
-complete -c zorua -n '__fish_use_subcommand' -a 'ls usage setup use login off add rm bind unbind binds hook provider prompt version help'
+complete -c zorua -n '__fish_use_subcommand' -a 'ls usage pick tag setup use login off add rm bind unbind binds hook provider prompt version help'
 complete -c zorua -n '__fish_use_subcommand' -a '(ZORUA_SHELL=fish python3 $ZORUA_CORE names 2>/dev/null)'
-complete -c zorua -n '__fish_seen_subcommand_from use login bind rm' -a '(ZORUA_SHELL=fish python3 $ZORUA_CORE names 2>/dev/null)'
+complete -c zorua -n '__fish_seen_subcommand_from use login bind rm tag' -a '(ZORUA_SHELL=fish python3 $ZORUA_CORE names 2>/dev/null)'
