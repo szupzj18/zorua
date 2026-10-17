@@ -77,10 +77,10 @@ _zorua_complete() {
   local cur=${COMP_WORDS[COMP_CWORD]} names
   names=$(ZORUA_SHELL=bash python3 "$ZORUA_CORE" names 2>/dev/null)
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=($(compgen -W "ls usage setup use login off add rm bind unbind binds hook provider prompt version help $names" -- "$cur"))
+    COMPREPLY=($(compgen -W "ls usage pick tag setup use login off add rm bind unbind binds hook provider prompt version help $names" -- "$cur"))
   else
     case ${COMP_WORDS[1]} in
-      use|login|bind|rm) COMPREPLY=($(compgen -W "$names" -- "$cur")) ;;
+      use|login|bind|rm|tag) COMPREPLY=($(compgen -W "$names" -- "$cur")) ;;
     esac
   fi
 }

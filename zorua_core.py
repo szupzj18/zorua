@@ -9,6 +9,8 @@ this program and then `source` the statements it wrote to $ZORUA_EVAL_FILE
 Stdlib only, Python 3.8+.
 """
 import base64
+import copy
+import hashlib
 import json
 import math
 import os
@@ -17,6 +19,7 @@ import shlex
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -35,7 +38,7 @@ CLAUDE_SETTINGS_TEMPLATE = os.path.join(CONFIG_DIR, "claude-settings.json")
 BINDING_FILE = os.path.join(CONFIG_DIR, "bindings.tsv")
 CLAUDE_FILE = os.path.join(CONFIG_DIR, "claude-accounts.tsv")
 SHELL = os.environ.get("ZORUA_SHELL", "zsh")
-RESERVED = {"provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
+RESERVED = {"tag", "pick", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
             "unset", "help", "add", "rm", "bind", "unbind", "binds", "version",
             "prompt", "apply", "names", "hook", "-h", "--help", "-v", "--version"}
 
@@ -426,6 +429,143 @@ def emit_json(all_acc, info, live, claude_age, claude_expired=None):
                      ensure_ascii=False, indent=2))
 
 
+def read_codex_info(home):
+    r = {"email": None, "plan": None, "until": None, "tok": {}, "state": "ok"}
+    try:
+        with open(os.path.join(home, "auth.json")) as f:
+            d = json.load(f)
+    except Exception:
+        r["state"] = "none"
+        return r
+    t = d.get("tokens") or {}
+    r["tok"] = t
+    if not t.get("id_token"):
+        r["state"] = "apikey" if d.get("OPENAI_API_KEY") else "none"
+        return r
+    try:
+        p = t["id_token"].split(".")[1]
+        p += "=" * (-len(p) % 4)
+        c = json.loads(base64.urlsafe_b64decode(p))
+    except Exception:
+        r["state"] = "bad"
+        return r
+    a = c.get("https://api.openai.com/auth") or {}
+    r["email"] = c.get("email") or c.get("preferred_username") or c.get("sub")
+    r["plan"] = a.get("chatgpt_plan_type")
+    r["until"] = (a.get("chatgpt_subscription_active_until") or "")[:10] or None
+    return r
+
+
+def fetch_codex_usage(tok):
+    if not tok.get("access_token"):
+        return None, "-"
+    req = urllib.request.Request(
+        "https://chatgpt.com/backend-api/wham/usage",
+        headers={"Authorization": "Bearer " + tok["access_token"],
+                 "chatgpt-account-id": tok.get("account_id", ""),
+                 "User-Agent": "zorua"})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=15)), None
+    except urllib.error.HTTPError as e:
+        return None, ("token expired (run codex once to refresh)" if e.code in (401, 403) else "HTTP %d" % e.code)
+    except Exception as e:
+        r = getattr(e, "reason", e)
+        return None, "network error: %s (check proxy)" % (str(r) or type(r).__name__)
+
+def read_claude_info(home):
+    st = claude_status(home)
+    r = {"email": None, "plan": None, "until": None, "tok": {}, "state": "ok"}
+    if st.get("error"):
+        r["state"], r["email"] = "bad", st["error"]
+    elif not st.get("loggedIn"):
+        r["state"] = "none"
+    else:
+        r["email"] = st.get("email") or st.get("orgName") or "(signed in)"
+        r["plan"] = st.get("subscriptionType")
+    return r
+
+
+def token_expired(tokens):
+    for field in ("access_token", "id_token"):
+        try:
+            part = tokens.get(field, "").split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+            if "exp" in claims:
+                return float(claims["exp"]) <= time.time()
+        except (ValueError, IndexError, TypeError):
+            continue
+    return False
+
+
+def collect_usage(all_acc, online):
+    claude_age = {}
+    claude_expired = {}
+    accts = [(n, h) for n, h, _ in all_acc]
+    kind = {n: k for n, _, k in all_acc}
+    info = {n: read_codex_info(h) for n, h in accts if kind[n] == "codex"}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        cfuts = {n: ex.submit(read_claude_info, h) for n, h in accts if kind[n] == "claude"}
+        info.update({n: f.result() for n, f in cfuts.items()})
+    live = {}
+    if online:
+        # One request per email quota pool, shared with pick and usage for 30 seconds.
+        cache_path = os.path.join(CONFIG_DIR, "usage-cache.json")
+        try:
+            with open(cache_path) as f:
+                cache = json.load(f)
+        except (OSError, ValueError):
+            cache = {}
+        pools = {}
+        for n, h in accts:
+            if kind[n] == "codex" and info[n]["state"] == "ok":
+                identity = str(info[n]["email"] or info[n]["tok"].get("account_id") or h).casefold()
+                pool = hashlib.sha256(identity.encode()).hexdigest()
+                pools.setdefault(pool, []).append(n)
+        now = time.time()
+        results, pending = {}, {}
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for pool, names in pools.items():
+                cached = cache.get(pool, {})
+                age = now - cached.get("at", 0)
+                if 0 <= age < 30 and "result" in cached:
+                    data, error = copy.deepcopy(cached["result"])
+                    for w in ((data or {}).get("rate_limit") or {}).values():
+                        if isinstance(w, dict) and "reset_after_seconds" in w:
+                            w["reset_after_seconds"] = max(0, w["reset_after_seconds"] - int(age))
+                    results[pool] = (data, error)
+                else:
+                    # Prefer a non-expired credential when several homes share a pool.
+                    n = next((n for n in names if not token_expired(info[n]["tok"])), names[0])
+                    pending[pool] = ex.submit(fetch_codex_usage, info[n]["tok"])
+            for pool, future in pending.items():
+                results[pool] = future.result()
+                cache[pool] = {"at": now, "result": results[pool]}
+        if pending:
+            _write_pick_json(cache_path, {p: c for p, c in cache.items() if now - c.get("at", 0) < 30})
+        live = {n: results[pool] for pool, names in pools.items() for n in names}
+        # Claude Code windows come from the status-line relay's cache, not the network.
+        # A window is dropped once its reset time has passed (it no longer applies).
+        now = time.time()
+        for n, h in accts:
+            if kind[n] != "claude":
+                continue
+            c = claude_usage_cache(h) or {}
+            ws, gone = [], []
+            for key, secs in (("five_hour", 18000), ("seven_day", 604800)):
+                w = c.get(key)
+                if isinstance(w, dict) and w.get("resets_at") and w["resets_at"] > now:
+                    ws.append({"limit_window_seconds": secs, "used_percent": int(round(float(w["used_percentage"]))),
+                               "reset_after_seconds": int(w["resets_at"] - now)})
+                elif isinstance(w, dict) and w.get("resets_at"):
+                    gone.append({"window_seconds": secs, "reset_ago_seconds": int(now - w["resets_at"])})
+            claude_expired[n] = gone
+            claude_age[n] = (int(now - c["updated_at"]) if c.get("updated_at") else None) if c else None
+            if ws:
+                live[n] = ({"rate_limit": {"primary_window": ws[0], "secondary_window": ws[1] if len(ws) > 1 else None}}, None)
+
+    return info, live, claude_age, claude_expired
+
+
 def render(online, verbose, expiry=False, as_json=False):
     # The subscription end date is read from the cached sign-in token, which can be stale, so it
     # is only shown on request: --expiry, or ZORUA_EXPIRY=1.
@@ -447,91 +587,7 @@ def render(online, verbose, expiry=False, as_json=False):
     def paint(code, s):
         return "\033[%sm%s\033[0m" % (code, s) if color and code else s
 
-    def load(home):
-        r = {"email": None, "plan": None, "until": None, "tok": {}, "state": "ok"}
-        try:
-            with open(os.path.join(home, "auth.json")) as f:
-                d = json.load(f)
-        except Exception:
-            r["state"] = "none"
-            return r
-        t = d.get("tokens") or {}
-        r["tok"] = t
-        if not t.get("id_token"):
-            r["state"] = "apikey" if d.get("OPENAI_API_KEY") else "none"
-            return r
-        try:
-            p = t["id_token"].split(".")[1]
-            p += "=" * (-len(p) % 4)
-            c = json.loads(base64.urlsafe_b64decode(p))
-        except Exception:
-            r["state"] = "bad"
-            return r
-        a = c.get("https://api.openai.com/auth") or {}
-        r["email"] = c.get("email") or c.get("preferred_username") or c.get("sub")
-        r["plan"] = a.get("chatgpt_plan_type")
-        r["until"] = (a.get("chatgpt_subscription_active_until") or "")[:10] or None
-        return r
-
-    def fetch(tok):
-        if not tok.get("access_token"):
-            return None, "-"
-        req = urllib.request.Request(
-            "https://chatgpt.com/backend-api/wham/usage",
-            headers={"Authorization": "Bearer " + tok["access_token"],
-                     "chatgpt-account-id": tok.get("account_id", ""),
-                     "User-Agent": "zorua"})
-        try:
-            return json.load(urllib.request.urlopen(req, timeout=15)), None
-        except urllib.error.HTTPError as e:
-            return None, ("token expired (run codex once to refresh)" if e.code in (401, 403) else "HTTP %d" % e.code)
-        except Exception as e:
-            r = getattr(e, "reason", e)
-            return None, "network error: %s (check proxy)" % (str(r) or type(r).__name__)
-
-    def load_claude(home):
-        st = claude_status(home)
-        r = {"email": None, "plan": None, "until": None, "tok": {}, "state": "ok"}
-        if st.get("error"):
-            r["state"], r["email"] = "bad", st["error"]
-        elif not st.get("loggedIn"):
-            r["state"] = "none"
-        else:
-            r["email"] = st.get("email") or st.get("orgName") or "(signed in)"
-            r["plan"] = st.get("subscriptionType")
-        return r
-
-    claude_age = {}
-    claude_expired = {}
-    info = {n: load(h) for n, h in accts if kind[n] == "codex"}
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        cfuts = {n: ex.submit(load_claude, h) for n, h in accts if kind[n] == "claude"}
-        info.update({n: f.result() for n, f in cfuts.items()})
-    live = {}
-    if online:
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {n: ex.submit(fetch, info[n]["tok"]) for n, _ in accts
-                    if kind[n] == "codex" and info[n]["state"] == "ok"}
-            live = {n: f.result() for n, f in futs.items()}
-        # Claude Code windows come from the status-line relay's cache, not the network.
-        # A window is dropped once its reset time has passed (it no longer applies).
-        now = time.time()
-        for n, h in accts:
-            if kind[n] != "claude":
-                continue
-            c = claude_usage_cache(h) or {}
-            ws, gone = [], []
-            for key, secs in (("five_hour", 18000), ("seven_day", 604800)):
-                w = c.get(key)
-                if isinstance(w, dict) and w.get("resets_at") and w["resets_at"] > now:
-                    ws.append({"limit_window_seconds": secs, "used_percent": int(round(float(w["used_percentage"]))),
-                               "reset_after_seconds": int(w["resets_at"] - now)})
-                elif isinstance(w, dict) and w.get("resets_at"):
-                    gone.append({"window_seconds": secs, "reset_ago_seconds": int(now - w["resets_at"])})
-            claude_expired[n] = gone
-            claude_age[n] = (int(now - c["updated_at"]) if c.get("updated_at") else None) if c else None
-            if ws:
-                live[n] = ({"rate_limit": {"primary_window": ws[0], "secondary_window": ws[1] if len(ws) > 1 else None}}, None)
+    info, live, claude_age, claude_expired = collect_usage(all_acc, online)
 
     if as_json:
         emit_json(all_acc, info, live, claude_age, claude_expired)
@@ -797,6 +853,209 @@ def cmd_ls(args, usage=False):
     return 0
 
 
+def _write_pick_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".zorua-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump(value, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def remove_tags(name):
+    tags = load_tags()
+    if name in tags:
+        del tags[name]
+        _write_pick_json(os.path.join(CONFIG_DIR, "tags.json"), tags)
+
+
+def load_tags():
+    try:
+        with open(os.path.join(CONFIG_DIR, "tags.json")) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def cmd_tag(args):
+    if not args or args[0] not in all_names():
+        err("usage: zorua tag <account-or-provider> [+tag ...] [-tag ...]")
+        return 1
+    tags = load_tags()
+    name = args[0]
+    chosen = set(tags.get(name, []))
+    for spec in args[1:]:
+        if not re.match(r"^[+-][A-Za-z0-9_.-]+$", spec):
+            err("zorua tag: use +tag or -tag (letters, digits, . _ -)")
+            return 1
+        if spec[0] == "+":
+            chosen.add(spec[1:])
+        else:
+            chosen.discard(spec[1:])
+    if len(args) > 1:
+        tags[name] = sorted(chosen)
+        _write_pick_json(os.path.join(CONFIG_DIR, "tags.json"), tags)
+    print("%s: %s" % (name, " ".join(sorted(chosen)) or "(no tags)"))
+    return 0
+
+
+def account_models(home, kind):
+    """Only locally evidenced models; never send a discovery request during pick."""
+    ids = []
+    try:
+        if kind == "codex":
+            with open(os.path.join(home, "models_cache.json")) as f:
+                catalog = json.load(f).get("models", [])
+            ids.extend(m.get("slug") or m.get("id") for m in catalog if isinstance(m, dict))
+        else:
+            with open(os.path.join(home, "settings.json")) as f:
+                settings = json.load(f)
+            ids.extend(zp.env_models(settings.get("env") or {}))
+            ids.append(settings.get("model"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    if kind == "codex":
+        try:
+            with open(os.path.join(home, "config.toml")) as f:
+                head = f.read().split("\n[", 1)[0]
+            m = re.search(r'^\s*model\s*=\s*"([^"\n]+)"', head, re.M)
+            if m:
+                ids.append(m.group(1))
+        except OSError:
+            pass
+    return sorted(set(i for i in ids if isinstance(i, str) and i))
+
+
+def _pick_model(cat, sel):
+    if not sel:
+        return next(iter(cat.values()), None)
+    exact = cat.get(sel) or next((i for i in cat.values() if i == sel), None)
+    if exact:
+        return exact
+    hits = {i for a, i in cat.items() if a.startswith(sel) or i.startswith(sel)}
+    return next(iter(hits)) if len(hits) == 1 else None
+
+
+def cmd_pick(args):
+    opts = {"--kind": "", "--needs": "", "--avoid": "", "--model": ""}
+    as_json, i = False, 0
+    while i < len(args):
+        a = args[i]
+        if a == "--json":
+            as_json = True
+        elif a in opts and i + 1 < len(args) and not args[i + 1].startswith("--"):
+            opts[a] = args[i + 1]
+            i += 1
+        else:
+            err("usage: zorua pick --kind codex|claude [--needs tag,...] [--avoid tag,...] [--model ID-or-prefix] [--json]")
+            return 1
+        i += 1
+    kind = opts["--kind"]
+    if kind not in zp.AGENTS:
+        err("zorua pick: --kind must be codex or claude")
+        return 1
+    needs = set(filter(None, opts["--needs"].split(",")))
+    avoid = set(filter(None, opts["--avoid"].split(",")))
+    tags = load_tags()
+    excluded, candidates = [], []
+    matched = []
+    # Filter cheap constraints before fetching any usage or Claude login status.
+    for n, h, k in all_accounts():
+        reasons = []
+        have = set(tags.get(n, []))
+        if k != kind:
+            reasons.append("wrong kind: " + k)
+        if needs - have:
+            reasons.append("missing tags: " + ",".join(sorted(needs - have)))
+        if avoid & have:
+            reasons.append("avoided tags: " + ",".join(sorted(avoid & have)))
+        cat = {mid: mid for mid in account_models(h, k)} if opts["--model"] else {}
+        if opts["--model"] and not _pick_model(cat, opts["--model"]):
+            reasons.append("model unavailable or ambiguous in local catalog: " + opts["--model"])
+        if reasons:
+            excluded.append({"name": n, "reasons": reasons})
+        else:
+            matched.append((n, h, k))
+    info, live, age, expired = collect_usage(matched, True)
+    for n, h, k in matched:
+        item = info[n]
+        reasons = []
+        if item["state"] != "ok":
+            reasons.append("not signed in or invalid credentials")
+        if token_expired(item["tok"]):
+            reasons.append("login token expired; run zorua login " + n)
+        data, error = live.get(n, (None, None))
+        if error and "token expired" in error:
+            reasons.append(error)
+        remaining = {"7d": None, "5h": None}
+        for w in ((data or {}).get("rate_limit") or {}).values():
+            if isinstance(w, dict) and w.get("reset_after_seconds", 0) > 0:
+                secs = w.get("limit_window_seconds")
+                if secs in (18000, 604800):
+                    remaining["7d" if secs == 604800 else "5h"] = max(0, min(100, 100 - float(w["used_percent"])))
+        if any(value == 0 for value in remaining.values()):
+            reasons.append("quota exhausted")
+        if reasons:
+            excluded.append({"name": n, "reasons": reasons})
+            continue
+        candidates.append({"name": n, "agent": k, "email": item["email"], "remaining": remaining,
+                           "tags": sorted(tags.get(n, [])), "reason": "ranked by remaining 7d, then 5h quota; unknown quota ranks last"})
+    for n, p in zp.load(CONFIG_DIR).items():
+        reasons = []
+        have = set(tags.get(n, []))
+        if zp.agent(p) != kind:
+            reasons.append("wrong kind: " + zp.agent(p))
+        if needs - have:
+            reasons.append("missing tags: " + ",".join(sorted(needs - have)))
+        if avoid & have:
+            reasons.append("avoided tags: " + ",".join(sorted(avoid & have)))
+        cat = zp.models(p)
+        if not cat:
+            ids = zp.env_models(p.get("env", {})) if kind == "claude" else [p.get("model")]
+            cat = {mid: mid for mid in ids if mid}
+        mid = _pick_model(cat, opts["--model"])
+        if not mid:
+            reasons.append("model unavailable or ambiguous: " + (opts["--model"] or "no configured model"))
+        if not (zp.secret(p) or p.get("key_ref") == "keychain"):
+            reasons.append("no configured provider key")
+        if reasons:
+            excluded.append({"name": n, "reasons": reasons})
+        else:
+            candidates.append({"name": n + ":" + mid, "agent": kind, "email": None,
+                               "remaining": {"7d": None, "5h": None}, "tags": sorted(have),
+                               "reason": "configured provider key and model; provider quota/expiry unknown; no extra network request"})
+    def score(c):
+        return tuple(c["remaining"][k] if c["remaining"][k] is not None else -1 for k in ("7d", "5h"))
+    candidates.sort(key=lambda c: (tuple(-v for v in score(c)), c["name"]))
+    pools, ranked = set(), []
+    for c in candidates:
+        pool = c["email"].casefold() if c["email"] else c["name"]
+        if pool in pools:
+            excluded.append({"name": c["name"], "reasons": ["shared email quota pool; a better candidate represents it"]})
+        else:
+            pools.add(pool)
+            ranked.append(c)
+    result = {"recommendation": ranked[0] if ranked else None, "alternatives": ranked[1:], "excluded": excluded}
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif ranked:
+        for label, c in [("recommended", ranked[0])] + [("alternative", c) for c in ranked[1:]]:
+            print("%s: %s  (7d left %s; 5h left %s)" % (label, c["name"],
+                  "unknown" if c["remaining"]["7d"] is None else "%g%%" % c["remaining"]["7d"],
+                  "unknown" if c["remaining"]["5h"] is None else "%g%%" % c["remaining"]["5h"]))
+            print("  " + c["reason"])
+    else:
+        print("no eligible candidates")
+        for c in excluded:
+            print("  %s: %s" % (c["name"], "; ".join(c["reasons"])))
+    return 0 if ranked else 1
+
+
 def claude_override_warning(home):
     """Warn when inherited variables would outrank the Claude account we just selected."""
     present = [v for v in CLAUDE_OVERRIDES if os.environ.get(v)]
@@ -1043,6 +1302,7 @@ def cmd_rm(args):
     write_tsv(reg_file, [(n, p) for n, p in read_tsv(reg_file) if n != name])
     if os.path.exists(BINDING_FILE):
         write_tsv(BINDING_FILE, [(n, p) for n, p in read_tsv(BINDING_FILE) if n != name])
+    remove_tags(name)
     print("removed account from registry: %s" % name)
     if not purge and os.path.isdir(home) and sys.stdin.isatty():
         purge = confirm("Also delete data directory %s ? This cannot be undone" % home, "n")
@@ -1279,6 +1539,7 @@ def provider_rm(args):
         os.remove(os.path.join(CONFIG_DIR, "run", "%s.settings.json" % name))
     except OSError:
         pass
+    remove_tags(name)
     print("removed provider: %s" % name)
     return 0
 
@@ -1817,6 +2078,9 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua usage [-v]              live limits (5h/7d bars); -v = detailed blocks (also: zorua ls -v)
                                 add --expiry (or ZORUA_EXPIRY=1) to show Codex subscription end dates;
                                 hidden by default because they come from a cached token and can be stale
+  zorua tag <name> [+tag ...] [-tag ...]  view/edit account or provider labels
+  zorua pick --kind codex|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]
+                                recommend by remaining 7d then 5h quota; shared emails use one pool
   zorua use <name>              switch this shell to <name> (sets CODEX_HOME or CLAUDE_CONFIG_DIR)
   zorua use -                   switch this shell back to default
   zorua <name> [args]           one-shot: run codex (or claude, for a Claude account) under that
@@ -1945,6 +2209,10 @@ def main(argv):
         rc = cmd_ls(rest)
     elif sub == "usage":
         rc = cmd_ls(rest, usage=True)
+    elif sub == "tag":
+        rc = cmd_tag(rest)
+    elif sub == "pick":
+        rc = cmd_pick(rest)
     elif sub == "use":
         rc = cmd_use(rest, st)
     elif sub in ("off", "reset", "unset"):
