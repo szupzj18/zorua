@@ -186,6 +186,28 @@ class Doctor(unittest.TestCase):
         self.assertNotIn('dummy-provider-key', json.dumps(d))
         self.assertEqual(self.snapshot(), before)
 
+    def test_claude_provider_following_an_unlisted_model_warns(self):
+        self.cfg.mkdir()
+        p = {'env': self.c.zp.build_env('https://relay.example', 'dummy-provider-key', models=[]),
+             'models': {'opus': 'relay/opus'}}
+        self.c.zp.save(str(self.cfg), {'relay': p})
+        claude_dir = self.root / '.claude'
+        claude_dir.mkdir()
+        ok = {'status': 'ok', 'detail': 'key accepted', 'ms': 1, 'http': 200, 'via': 'GET /models'}
+        with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(claude_dir)}), \
+                patch.object(self.c.zp, 'check', return_value=ok):
+            p['env']['ANTHROPIC_DEFAULT_SONNET_MODEL'] = 'relay/sonnet'
+            self.c.zp.save(str(self.cfg), {'relay': p})
+            for saved, expect in [('claude-elsewhere', 'warn'), ('opus', None), ('sonnet[1m]', None), ('haiku', 'warn')]:
+                (claude_dir / 'settings.json').write_text(json.dumps({'model': saved}))
+                rc, d = self.report('relay')
+                self.assertEqual(rc, 0)
+                self.assertEqual(self.checks(d).get('model', {}).get('status'), expect)
+            p['env']['ANTHROPIC_MODEL'] = 'relay/opus'       # a provider default ignores /model
+            self.c.zp.save(str(self.cfg), {'relay': p})
+            (claude_dir / 'settings.json').write_text(json.dumps({'model': 'claude-elsewhere'}))
+            self.assertNotIn('model', self.checks(self.report('relay')[1]))
+
     def test_matcher_hash_respects_event_semantics_and_whitespace(self):
         handler = {'type': 'command', 'command': 'echo ready'}
         # Stop ignores matchers upstream; tool events preserve the declared pattern.

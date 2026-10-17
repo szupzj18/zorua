@@ -210,6 +210,19 @@ class ProviderKeys(unittest.TestCase):
         raw = 'x' * 110 + self.key
         self.assertNotIn(self.key[:10], zp._reply_message(raw, self.codex))
 
+    def test_default_model_and_settings_survive_a_document_round_trip(self):
+        p = dict(self.claude, settings={'enableArtifact': False})
+        self.assertEqual(zp.set_default_model(p, 'vendor/new'), 'new')
+        self.assertEqual(zp.default_model(p), 'vendor/new')
+        self.assertIn('vendor/new', zp.models(p).values())
+        back = zp.from_document(p, zp.document(p))
+        self.assertEqual(back['settings'], {'enableArtifact': False})
+        self.assertEqual(zp.secret(back), self.key)
+        self.assertEqual(zp.set_default_model(back, ''), '')
+        self.assertNotIn('ANTHROPIC_MODEL', back['env'])
+        with self.assertRaises(ValueError):
+            zp.set_default_model(dict(self.codex), '')
+
 
 if __name__ == '__main__':
     unittest.main()

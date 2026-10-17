@@ -417,6 +417,47 @@ not_contains "$out" 'model="dx-flash"' "codex default model is replaced"
 zorua model - >/dev/null
 out=$(PATH="$TMP/bin:$PATH" codex exec hi)
 contains "$out" 'model="dx-flash"' "codex default model without a pick"
+# provider default model: persistent (providers.json), marked in the lists, key untouched
+zorua provider models dx default pro >/dev/null
+contains "$(zorua provider models dx default)" "pro (dx-pro)" "codex default changed"
+contains "$(zorua provider models dx)" "dx-pro  (default)" "provider models marks the default"
+out=$(PATH="$TMP/bin:$PATH" codex exec hi)
+contains "$out" 'model="dx-pro"' "codex launch uses the saved default"
+fails zorua provider models dx default -
+zorua provider models dx default dx-flash >/dev/null
+zorua use rel >/dev/null
+zorua provider models rel default fresh/model >/dev/null
+contains "$(zorua model)" "fresh/model  (default)" "a new id is listed and becomes the default"
+not_contains "$(zorua model)" "m/default  (default)" "only one default is marked"
+out=$(PATH="$TMP/cbin:$PATH" claude hi)
+contains "$out" '"ANTHROPIC_MODEL": "fresh/model"' "saved default reaches claude"
+contains "$out" '"ANTHROPIC_AUTH_TOKEN": "sk-rel-secret-123456"' "changing the default keeps the key"
+fails zorua provider models rel default "bad id"
+fails zorua provider models rel default fresh/model extra
+zorua provider models rel add vendor/one one >/dev/null; zorua provider models rel add vendor/oneplus oneplus >/dev/null
+fails zorua provider models rel default on
+contains "$(zorua provider models rel default)" "fresh/model" "a failed default change keeps the old one"
+zorua model opus --save >/dev/null
+[[ $ZORUA_CLAUDE_MODEL == opus ]] || die "model --save must also pick the model in this shell"
+contains "$(zorua provider models rel default)" "m/opus[1M]" "model --save changes the provider default"
+[[ -s "$XDG_CONFIG_HOME/zorua/providers.json.bak" ]] || die "changing the default must back up providers.json"
+fails zorua model - --save
+fails zorua model --save
+zorua model - >/dev/null
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["model"]="claude-somewhere-9"; json.dump(d, open(p, "w"))' "$HOME/.claude/settings.json"
+out=$(zorua provider models rel default - 2>&1)
+contains "$out" "follows its own /model" "default - lets claude follow /model"
+contains "$out" "claude-somewhere-9" "warns when the /model choice is not one of the provider's models"
+out=$(PATH="$TMP/cbin:$PATH" claude hi)
+python3 -c 'import json,sys; e=json.load(open(sys.argv[1]))["env"]; assert not e.get("ANTHROPIC_MODEL"), e' "$XDG_CONFIG_HOME/zorua/run/rel.settings.json" || die "no default must leave ANTHROPIC_MODEL unset"
+contains "$(zorua provider models rel default)" "(none" "default shows none"
+# provider-level Claude Code settings (e.g. a gateway that rejects a feature) ride along in --settings
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["providers"]["rel"]["settings"]={"enableArtifact": False, "env": {"X": "1"}}; json.dump(d, open(p, "w"))' "$XDG_CONFIG_HOME/zorua/providers.json"
+out=$(PATH="$TMP/cbin:$PATH" claude hi)
+contains "$out" '"enableArtifact": false' "provider settings reach claude"
+not_contains "$out" '"X": "1"' "a settings env block never replaces the provider env"
+contains "$(zorua provider show rel)" "setting enableArtifact = false" "provider show lists its settings"
+ok "provider default model and settings"
 zorua use - >/dev/null
 # fetch: ask the endpoint for its model list (a local stand-in server)
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')

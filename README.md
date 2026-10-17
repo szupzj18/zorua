@@ -351,8 +351,10 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua provider migrate-keys [--dry-run]` | Back up the config (0600), then migrate plaintext keys into Keychain |
 | `zorua provider check [name …] [--json]` | Is the endpoint reachable and the key accepted? `GET` the model list (free); an Anthropic endpoint without one gets a one-token message request. Prints ok / warn / fail with the HTTP status and latency; an empty balance (HTTP 402, or a quota 429) is a fail. Without a name it checks every provider in parallel and prints one row each; exits 1 if any failed. Never prints the key. The web dashboard's **check** buttons run it |
 | `zorua use <provider>[:<model>]` / `zorua <provider>[:<model>] [args…]` | Switch this shell to a provider (and a model of it) / one-shot run |
-| `zorua model [alias\|-]` | List / pick / clear the model of the active provider |
+| `zorua model [alias\|-]` | List / pick / clear the model of the active provider (a per-shell pick; `(default)` marks the provider's default) |
+| `zorua model <alias> --save` | Pick it and also make it the provider's default for every new shell |
 | `zorua provider models <name> [add\|rm\|fetch]` | Manage a provider's model catalog |
+| `zorua provider models <name> default [<alias\|id>\|-]` | Show / set the provider's default model (stored in `providers.json`; a new id is added to the catalog). `-` (Claude only) drops it so `claude` follows its own `/model` choice |
 | `zorua rm <name> [--purge]` | Unregister an account (data kept unless `--purge` or confirmed) |
 | `zorua hook install\|remove\|status\|refresh` | Claude usage relay (see above) |
 | `zorua prompt` | Print the prompt marker |
