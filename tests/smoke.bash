@@ -537,6 +537,14 @@ not_contains "$out" 'model="dx-flash"' "codex default model is replaced"
 zorua model - >/dev/null
 out=$(PATH="$TMP/bin:$PATH" codex exec hi)
 contains "$out" 'model="dx-flash"' "codex default model without a pick"
+# --save makes the pick the provider's default for every new shell
+zorua model pro --save >/dev/null
+zorua model - >/dev/null
+out=$(PATH="$TMP/bin:$PATH" codex exec hi)
+contains "$out" 'model="dx-pro"' "model --save persists the provider default"
+contains "$(zorua model)" "dx-pro  (default)" "zorua model marks the default"
+zorua provider models dx default dx-flash >/dev/null
+fails zorua provider models dx default -
 zorua use - >/dev/null
 # fetch: ask the endpoint for its model list (a local stand-in server)
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')

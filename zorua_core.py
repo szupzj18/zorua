@@ -1276,7 +1276,11 @@ def cmd_doctor(args):
         results = {n: ex.submit(check_provider, n) for n in order}
         for n, future in results.items():
             res = future.result()
-            reports.append({"name": n, "agent": zp.agent(providers[n]), "checks": [{"check": "provider", "status": res["status"], "detail": res["detail"], "fix": "" if res["status"] == "ok" else "Check endpoint/key and run zorua provider check " + n}]})
+            checks = [{"check": "provider", "status": res["status"], "detail": res["detail"], "fix": "" if res["status"] == "ok" else "Check endpoint/key and run zorua provider check " + n}]
+            warn = follow_warning(n, providers[n])
+            if warn:
+                checks.append({"check": "model", "status": "warn", "detail": warn, "fix": "zorua provider models %s default <alias>" % n})
+            reports.append({"name": n, "agent": zp.agent(providers[n]), "checks": checks})
     if "--json" in args:
         print(json.dumps({"accounts": reports}, ensure_ascii=False, indent=2))
     else:
@@ -1353,9 +1357,15 @@ def cmd_use(args, st):
 
 
 def cmd_model(args, st):
-    """zorua model            list the models of the active provider(s)
-       zorua model <alias>    pick one for the active provider that has it
-       zorua model -          back to the provider's own default"""
+    """zorua model                 list the models of the active provider(s)
+       zorua model <alias>         pick one for the active provider that has it
+       zorua model <alias> --save  ... and make it that provider's default for every new shell
+       zorua model -               back to the provider's own default"""
+    save = "--save" in args
+    args = [a for a in args if a != "--save"]
+    if len(args) > 1 or (save and (not args or args[0] == "-")):
+        err("usage: zorua model [<alias> [--save] | -]   (no default at all: zorua provider models <name> default -)")
+        return 1
     provs = zp.load(CONFIG_DIR)
     active = [(k, st.home[k], provs[st.home[k]]) for k in MODEL_VAR if st.home.get(k) in provs]
     if not active:
@@ -1366,7 +1376,7 @@ def cmd_model(args, st):
             cat = zp.models(prov)
             print("%s provider %s%s" % (PROVIDER_AGENT[k], name, "" if cat else "  (no models yet: zorua provider models %s add|fetch)" % name))
             for alias, mid in cat.items():
-                print("  %s %-24s %s" % ("●" if st.model[k] == alias else " ", alias, mid))
+                print(model_line(prov, alias, mid, st.model[k] == alias))
         return 0
     sel = args[0]
     if sel == "-":
@@ -1386,7 +1396,7 @@ def cmd_model(args, st):
     pick_model(st, k, prov, sel)
     st.prompt()
     print("%s provider %s -> model %s (%s)" % (PROVIDER_AGENT[k], name, st.model[k], zp.resolve_model(prov, sel)))
-    return 0
+    return set_default(name, provs, sel) if save else 0
 
 
 def cmd_off(st, args=()):
@@ -1652,7 +1662,7 @@ def launch_claude(name, args, model_sel=""):
     mid = _chosen_model(prov, model_sel)
     if mid:
         env["ANTHROPIC_MODEL"] = mid
-    settings = zp.write_settings(CONFIG_DIR, name, zp.settings_for(os.environ, env))
+    settings = zp.write_settings(CONFIG_DIR, name, zp.settings_for(os.environ, env, zp.provider_settings(prov)))
     return _exec_agent("claude", ["--settings", settings], zp.process_env(os.environ, env), args)
 
 
@@ -1804,7 +1814,9 @@ def provider_show(args):
     for var, val in sorted((k, v) for k, v in items.items() if k not in ("models", "key_ref", "key_var")):
         print("%s=%s" % (var, zp.shown(var, val)))
     for alias, mid in zp.models(p).items():
-        print("model %s = %s" % (alias, mid))
+        print("model %s = %s%s" % (alias, mid, "  (default)" if mid == zp.default_model(p) else ""))
+    for key, val in sorted(zp.provider_settings(p).items()):
+        print("setting %s = %s" % (key, json.dumps(val, ensure_ascii=False)))
     return 0
 
 
@@ -1880,11 +1892,61 @@ def provider_check(args):
     return 1 if bad else 0
 
 
+MODELS_USAGE = "usage: zorua provider models <provider> [add <model-id> [alias] | rm <alias> | fetch | default [<alias|id> | -]]"
+
+
+def model_line(prov, alias, mid, picked=False):
+    """one catalog row: ● = this shell's pick, (default) = what a launch uses without one"""
+    return "  %s %-24s %s%s" % ("●" if picked else " ", alias, mid, "  (default)" if mid == zp.default_model(prov) else "")
+
+
+def follow_warning(name, prov):
+    """A Claude provider without a default follows /model, which is shared by every provider:
+    say so when the model saved there is not one this provider lists."""
+    saved = zp.user_settings(os.environ).get("model")
+    if zp.agent(prov) != "claude" or zp.default_model(prov) or not isinstance(saved, str) or not saved:
+        return ""
+    role = re.sub(r"\[[^\]]*\]$", "", saved).lower()      # Claude Code's own aliases, e.g. opus[1m]
+    if role == "default" or (role in zp.MODEL_VARS and prov["env"].get(zp.MODEL_VARS[role])):
+        return ""
+    if zp.resolve_model(prov, saved) is None:
+        return ("the model saved by Claude Code's /model (%s) is not in %s's list; claude may send it to this "
+                "endpoint (set one: zorua provider models %s default <alias>)" % (saved, name, name))
+    return ""
+
+
+def set_default(name, provs, sel):
+    """`provider models <name> default <alias|id|->`: change the provider's persistent default. -> exit code"""
+    p = provs[name]
+    mid = "" if sel == "-" else zp.resolve_model(p, sel)
+    if mid is None:                          # not listed yet: a new full model id, unless it is a prefix
+        prefixed = [a for a in zp.models(p) if a.startswith(sel)]
+        if prefixed or not re.match(r"^[^\x00-\x1f\x7f\s]+$", sel):
+            err("zorua: '%s' is ambiguous or not a model id (matches: %s)" % (sel, " ".join(prefixed) or "none"))
+            return 1
+        mid = sel
+    try:
+        alias = zp.set_default_model(p, mid)
+    except ValueError as e:
+        err("zorua: %s" % e)
+        return 1
+    zp.backup(CONFIG_DIR)
+    zp.save(CONFIG_DIR, provs)
+    if alias:
+        print("%s default model -> %s (%s); new launches without a per-shell pick use it" % (name, alias, mid))
+    else:
+        print("%s has no default model now; claude follows its own /model choice" % name)
+        warn = follow_warning(name, p)
+        if warn:
+            err("zorua: warning: " + warn)
+    return 0
+
+
 def provider_models(args):
     provs = zp.load(CONFIG_DIR)
     name = args[0] if args else ""
     if name not in provs:
-        err("usage: zorua provider models <provider> [add <model-id> [alias] | rm <alias> | fetch]")
+        err(MODELS_USAGE)
         return 1
     p = provs[name]
     action, rest = (args[1] if len(args) > 1 else "ls"), args[2:]
@@ -1893,8 +1955,17 @@ def provider_models(args):
         if not cat:
             print("(no models yet — zorua provider models %s add <model-id> [alias], or: fetch)" % name)
         for alias, mid in cat.items():
-            print("  %-24s %s" % (alias, mid))
+            print(model_line(p, alias, mid))
         return 0
+    if action == "default":
+        if len(rest) > 1:
+            err(MODELS_USAGE)
+            return 1
+        if not rest:
+            mid = zp.default_model(p)
+            print("%s (%s)" % (zp.selected_alias(p, mid), mid) if mid else "(none: claude follows its own /model choice)")
+            return 0
+        return set_default(name, provs, rest[0])
     if action == "add":
         if not rest:
             err("usage: zorua provider models %s add <model-id> [alias]" % name)
@@ -1926,7 +1997,7 @@ def provider_models(args):
         n = zp.add_models(p, ids)
         print("%s offers %d model(s); %d new" % (name, len(ids), n))
     else:
-        err("usage: zorua provider models <provider> [add <model-id> [alias] | rm <alias> | fetch]")
+        err(MODELS_USAGE)
         return 1
     zp.save(CONFIG_DIR, provs)
     return provider_models([name])
@@ -2339,8 +2410,12 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua provider ls|show|rm     list / show (keys masked) / remove providers
   zorua provider models <name> [add <model-id> [alias] | rm <alias> | fetch]
                                 a provider can hold many models; fetch asks its endpoint for the list
+  zorua provider models <name> default [<alias|id> | -]
+                                show / set the model every launch uses without a per-shell pick;
+                                - (Claude only) drops it so claude follows its own /model choice
   zorua use <provider>:<model>  switch provider and pick a model of it in one go (alias, id or prefix)
   zorua model [alias | -]       list / pick / clear the model of the active provider
+  zorua model <alias> --save    pick it and also make it the provider's default
   zorua provider import cc-switch [--dry-run] [--force]
                                 copy custom Claude and Codex providers out of cc-switch (read-only)
   zorua use <provider>          this shell's plain `claude` (or `codex`) runs on the provider; one

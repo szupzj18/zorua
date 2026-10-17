@@ -228,6 +228,27 @@ def selected_alias(p, model_id):
     return next((a for a, i in models(p).items() if i == model_id), model_id)
 
 
+def default_model(p):
+    """-> the model a launch uses without a per-shell pick; "" = Claude Code's own choice (/model)"""
+    return p["env"].get(MODEL_VARS["default"], "") if agent(p) == "claude" else p.get("model", "")
+
+
+def set_default_model(p, model_id):
+    """Make `model_id` the provider's default (listing it if new); "" lets Claude Code's /model decide.
+    -> the alias it is listed under ("" when cleared)"""
+    if not model_id:
+        if agent(p) != "claude":
+            raise ValueError("a Codex provider needs a default model (Codex would otherwise send its own)")
+        p["env"].pop(MODEL_VARS["default"], None)
+        return ""
+    add_models(p, [model_id])
+    if agent(p) == "claude":
+        p["env"][MODEL_VARS["default"]] = model_id
+    else:
+        p["model"] = model_id
+    return selected_alias(p, model_id)
+
+
 def env_models(env):
     """distinct model ids named in a Claude provider's env (roles + default + subagent), in order"""
     seen = []
@@ -409,19 +430,33 @@ def user_settings_path(base):
                         "settings.json")
 
 
-def settings_for(base, provider_env):
-    """The --settings document: the provider env, with every conflicting variable the
-    user's own settings.json sets (and the provider does not) blanked out."""
-    env = dict(provider_env)
+def user_settings(base):
+    """-> the user's own settings.json as a dict ({} when missing or unreadable)"""
     try:
         with open(user_settings_path(base)) as f:
-            theirs = (json.load(f).get("env") or {})
+            doc = json.load(f)
     except (OSError, ValueError):
-        theirs = {}
-    for var in theirs:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def provider_settings(p):
+    """Claude Code settings this provider needs (e.g. a gateway that rejects some feature);
+    the env block stays the provider env."""
+    extra = p.get("settings")
+    return {k: v for k, v in extra.items() if k != "env"} if isinstance(extra, dict) else {}
+
+
+def settings_for(base, provider_env, extra=None):
+    """The --settings document: the provider's own settings plus the provider env, with every
+    conflicting variable the user's own settings.json sets (and the provider does not) blanked out."""
+    env = dict(provider_env)
+    for var in user_settings(base).get("env") or {}:
         if _strip(var) and var not in env:
             env[var] = ""
-    return {"env": env}
+    doc = dict(extra or {})
+    doc["env"] = env
+    return doc
 
 
 def write_settings(cfg, name, doc):
