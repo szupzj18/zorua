@@ -1488,7 +1488,7 @@ def provider_import(args):
         added += 1
         imported.append(name)
     if added and not dry:
-        for name in imported:
+        for name in dict.fromkeys(imported):
             p = provs[name]
             provs[name] = zp.store_key(name, p, zp.secret(p))
         zp.save(CONFIG_DIR, provs)

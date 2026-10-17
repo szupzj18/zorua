@@ -194,6 +194,18 @@ class ProviderKeys(unittest.TestCase):
             c.main(['off'])
         self.assertIn('unset ZORUA_CODEX_KEY', c.EMIT.lines)
 
+    def test_force_import_deduplicates_sanitized_names_before_storage(self):
+        c = self.core()
+        db = self.root / 'dummy.db'
+        db.touch()
+        first = zp.build_env('https://relay.example', self.key)
+        second = zp.build_env('https://relay.example', 'second-dummy-key')
+        with patch.object(zp, 'cc_switch_providers', return_value=[('Relay A', first), ('Relay-A', second)]), patch.object(zp, 'cc_switch_codex_providers', return_value=[]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(c.main(['provider', 'import', 'cc-switch', '--force', '--db', str(db)]), 0)
+        stored = zp.load(str(self.cfg))['relay-a']
+        self.assertEqual(zp.secret(zp.resolve_key('relay-a', stored)), 'second-dummy-key')
+        self.assertNotIn('second-dummy-key', (self.cfg / 'providers.json').read_text())
+
     def test_redaction_precedes_truncation(self):
         raw = 'x' * 110 + self.key
         self.assertNotIn(self.key[:10], zp._reply_message(raw, self.codex))
