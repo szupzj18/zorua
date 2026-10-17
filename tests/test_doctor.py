@@ -186,6 +186,14 @@ class Doctor(unittest.TestCase):
         self.assertNotIn('dummy-provider-key', json.dumps(d))
         self.assertEqual(self.snapshot(), before)
 
+    def test_matcher_hash_respects_event_semantics_and_whitespace(self):
+        handler = {'type': 'command', 'command': 'echo ready'}
+        # Stop ignores matchers upstream; tool events preserve the declared pattern.
+        plain = self.c._doctor_hook_hash('Stop', {}, handler)
+        self.assertEqual(plain, self.c._doctor_hook_hash('Stop', {'matcher': 'Bash'}, handler))
+        self.assertNotEqual(self.c._doctor_hook_hash('PreToolUse', {'matcher': ' Bash '}, handler),
+                            self.c._doctor_hook_hash('PreToolUse', {'matcher': 'Bash'}, handler))
+
     def test_named_selection_unknown_and_text_repairs(self):
         self.account('one')
         self.account('two', signed=False)

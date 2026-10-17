@@ -1117,8 +1117,8 @@ def _doctor_hook_hash(event, group, handler):
         h["additionalContextLimit"] = limit
     identity = {"event_name": re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower(), "hooks": [h]}
     matcher = group.get("matcher")
-    if matcher is not None and matcher.strip():
-        identity["matcher"] = matcher.strip()
+    if matcher is not None and event not in ("UserPromptSubmit", "Stop", "Interrupt"):
+        identity["matcher"] = matcher
     payload = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
 
