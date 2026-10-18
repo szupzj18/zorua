@@ -255,6 +255,8 @@ name). `providers.json` holds `"key_ref": "keychain"`; switching resolves the ke
 into a private shell environment (`ZORUA_CODEX_KEY` / `ZORUA_CLAUDE_KEY`). Launching,
 checking and editing also resolve it as needed so rotation takes effect immediately. Other systems, or unavailable Keychain,
 use the existing JSON format with mode 0600. `provider show` reports `key_storage`.
+Writing to Keychain hands the key to `security` on stdin, never on a command line
+(where any local process could read it with `ps`); keys must be printable ASCII.
 
 ```shell
 zorua provider set-key relay                 # hidden input on a terminal, otherwise stdin; checks the new key
