@@ -93,12 +93,42 @@ def key_storage(p):
     return "macOS Keychain (service zorua)" if p.get("key_ref") == "keychain" else "providers.json (0600)"
 
 
-def _security(args):
-    # Never expose stderr: security errors can contain the password argument.
+def _security(args, stdin=None):
+    # Never expose stderr: security errors can echo the command they failed on.
     try:
-        return subprocess.run(["security"] + args, capture_output=True, text=True, timeout=15)
+        return subprocess.run(["security"] + args, input=stdin, capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+def _keychain():
+    """Test-only: ZORUA_TEST_KEYCHAIN_FILE points security at a throwaway keychain file.
+    Unset (always, outside tests), security uses the user's default keychain."""
+    path = os.environ.get("ZORUA_TEST_KEYCHAIN_FILE")
+    return [path] if path else []
+
+
+def _quote(v):
+    # `security -i` splits its input lines itself: "..." groups, a backslash escapes the next character.
+    return '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
+
+
+# What `find-generic-password -w` prints verbatim; any other byte makes it print the whole key as hex.
+_KEYCHAIN_SAFE = re.compile(r"[\x20-\x7e]+")
+# `security -i` reads each line into a 4096-byte buffer and runs the rest of a longer one as a new command.
+_SECURITY_LINE_MAX = 4000
+
+
+def _keychain_add(name, key):
+    """Store `key` without it ever appearing in a process's argv (visible to every user via ps):
+    `security -i` takes the command on stdin, and -X takes the password as hex, so it needs no quoting."""
+    if not _KEYCHAIN_SAFE.fullmatch(key):
+        raise RuntimeError("API key has non-ASCII characters; the macOS Keychain tool cannot read such a key back")
+    line = " ".join(["add-generic-password", "-s", "zorua", "-a", _quote(name), "-X", key.encode().hex(), "-U"]
+                    + [_quote(k) for k in _keychain()])
+    if len(line) > _SECURITY_LINE_MAX:
+        raise RuntimeError("API key is too long for the macOS Keychain (%d characters)" % len(key))
+    return _security(["-i"], line + "\n")
 
 
 def store_key(name, p, key, require_keychain=False):
@@ -108,7 +138,7 @@ def store_key(name, p, key, require_keychain=False):
     var = key_var(out.get("env", {})) or out.get("key_var") or "ANTHROPIC_AUTH_TOKEN"
     if agent(out) == "claude" and sum(bool(out["env"].get(v)) for v in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")) > 1:
         raise RuntimeError("provider has two auth keys; keep only one auth variable before storing/migrating")
-    r = _security(["add-generic-password", "-s", "zorua", "-a", name, "-w", key, "-U"]) if sys.platform == "darwin" else None
+    r = _keychain_add(name, key) if sys.platform == "darwin" else None
     if r is not None and r.returncode == 0:
         out["key_ref"] = "keychain"
         out.pop("key", None)
@@ -133,7 +163,8 @@ def resolve_key(name, p):
     out = copy.deepcopy(p)
     if out.get("key_ref") != "keychain":
         return out
-    r = _security(["find-generic-password", "-s", "zorua", "-a", name, "-w"]) if sys.platform == "darwin" else None
+    # The key comes back on stdout (a pipe); nothing secret is in this argv.
+    r = _security(["find-generic-password", "-s", "zorua", "-a", name, "-w"] + _keychain()) if sys.platform == "darwin" else None
     if r is None or r.returncode or not r.stdout.rstrip("\n"):
         raise RuntimeError("Keychain key unavailable for %s; unlock Keychain or run zorua provider set-key %s" % (name, name))
     key = r.stdout.rstrip("\n")

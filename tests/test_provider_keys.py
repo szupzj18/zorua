@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,32 @@ class ProviderKeys(unittest.TestCase):
             with patch.object(zp, '_security', side_effect=AssertionError('listing must be lazy')):
                 self.assertEqual(zp.load(str(self.cfg))[name], stored)
                 self.assertNotIn(self.key, json.dumps(zp.document(stored, reveal=True)))
+
+    def test_store_key_keeps_the_key_out_of_every_argv(self):
+        key = 'k ey "q" \'s\' \\back\\ $HOME `x` ;#*!'
+        calls = []
+        real = subprocess.run
+        def run(argv, **kw):
+            calls.append((argv, kw.get('input')))
+            return real(argv, **kw)
+        with patch.object(subprocess, 'run', side_effect=run):
+            for name, p in [('cc', self.claude), ('cx', self.codex)]:
+                stored = zp.store_key(name, p, key)
+                self.assertEqual(zp.secret(zp.resolve_key(name, stored)), key)
+        self.assertEqual(len(calls), 4)
+        for argv, stdin in calls:
+            joined = ' '.join(argv)
+            for secret in (key, key.encode().hex(), self.key):
+                self.assertNotIn(secret, joined)
+        self.assertEqual(calls[0][0], ['security', '-i'])
+        self.assertIn(key.encode().hex(), calls[0][1])
+
+    def test_keys_the_keychain_tool_cannot_round_trip_are_refused(self):
+        for key in ('caf\u00e9-dummy-key', 'x' * 2000):
+            with patch.object(zp, '_security', side_effect=AssertionError('must not reach security')):
+                with self.assertRaises(RuntimeError) as cm:
+                    zp.store_key('relay', self.codex, key)
+            self.assertNotIn(key, str(cm.exception))
 
     def test_unavailable_and_linux_fallback_are_private(self):
         for target, val in [('platform', 'linux'), ('platform', 'darwin')]:
@@ -223,6 +250,60 @@ class ProviderKeys(unittest.TestCase):
         with self.assertRaises(ValueError):
             zp.set_default_model(dict(self.codex), '')
 
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and os.path.exists('/usr/bin/security'), 'needs the macOS security tool')
+class RealKeychain(unittest.TestCase):
+    """End to end against /usr/bin/security, in a throwaway keychain file. Creating a keychain that is not
+    login/System leaves the search list alone (Security's StorageManager); this checks it did, too."""
+
+    def security(self, *args):
+        return subprocess.run(['/usr/bin/security'] + list(args), capture_output=True, text=True, timeout=30)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.chain = os.path.join(tmp.name, 'zorua-e2e.keychain')
+        before = (self.security('list-keychains', '-d', 'user').stdout, self.security('default-keychain', '-d', 'user').stdout)
+        r = self.security('create-keychain', '-p', 'zorua-e2e-dummy', self.chain)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.addCleanup(lambda: self.assertEqual(
+            (self.security('list-keychains', '-d', 'user').stdout, self.security('default-keychain', '-d', 'user').stdout),
+            before, 'the user keychain search list / default keychain changed'))
+        self.addCleanup(self.security, 'delete-keychain', self.chain)
+        env = patch.dict(os.environ, {'ZORUA_TEST_KEYCHAIN_FILE': self.chain, 'PATH': '/usr/bin:/bin'})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_write_read_rotate_with_special_characters(self):
+        calls = []
+        real = subprocess.run
+        def run(argv, **kw):
+            calls.append((argv, kw.get('input') or ''))
+            return real(argv, **kw)
+        keys = ['dummy-plain-key-0123456789',
+                'dummy key "dq" \'sq\' \\bs\\ $HOME ${X} `id` ;|&<>#*?![]{}~^%= end\\',
+                ' dummy-surrounded-by-spaces ']
+        with patch.object(subprocess, 'run', side_effect=run):
+            p = zp.build_codex('https://relay.example', keys[0], 'm')
+            for key in keys:            # the first write adds the item; later ones update it (-U)
+                p = zp.store_key('e2e-relay', p, key, require_keychain=True)
+                self.assertEqual(p['key_ref'], 'keychain')
+                self.assertNotIn('key', p)
+                self.assertEqual(zp.secret(zp.resolve_key('e2e-relay', p)), key)
+        self.assertEqual(len(calls), 2 * len(keys))
+        for argv, stdin in calls:
+            self.assertIn(self.chain, ' '.join(argv) + stdin)
+            for key in keys:
+                self.assertNotIn(key.strip(), ' '.join(argv))
+                self.assertNotIn(key.encode().hex(), ' '.join(argv))
+        self.assertEqual(self.security('find-generic-password', '-s', 'zorua', '-a', 'e2e-relay', self.chain).returncode, 0)
+        # Only the throwaway keychain has it: the user's own keychains were never written.
+        self.assertNotEqual(self.security('find-generic-password', '-s', 'zorua', '-a', 'e2e-relay').returncode, 0)
+
+    def test_missing_item_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, 'Keychain key unavailable'):
+            zp.resolve_key('e2e-missing', {'kind': 'codex', 'key_ref': 'keychain'})
 
 if __name__ == '__main__':
     unittest.main()
