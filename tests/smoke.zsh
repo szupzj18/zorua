@@ -65,8 +65,10 @@ out=$(zorua ls)
 contains "$out" "default" "first-run seeding"
 contains "$out" "work" "first-run discovery"
 contains "$out" "3" "first-run numeric names"
-contains "$out" "work@example.com" "JWT email decode"
-contains "$out" "three@example.com" "JWT email decode (second account)"
+contains "$out" "w***k@example.com" "JWT email decode (masked)"
+contains "$out" "th***e@example.com" "JWT email decode (second account)"
+not_contains "$out" "work@example.com" "emails masked by default"
+contains "$(zorua ls --full)" "work@example.com" "ls --full shows the whole email"
 not_contains "$out" "bad name" "invalid names skipped by discovery"
 ok "first-run seeds default and discovers valid homes"
 
@@ -197,7 +199,7 @@ ok "zorua setup adopts existing homes and survives EOF"
 mkdir -p "$TMP/cbin"
 cp "$ROOT/tests/fake-claude" "$TMP/cbin/claude"
 PATH="$TMP/cbin:$PATH" zorua add --claude alt >/dev/null
-contains "$(PATH="$TMP/cbin:$PATH" zorua ls)" "claude@example.com" "claude account listed"
+contains "$(PATH="$TMP/cbin:$PATH" zorua ls)" "cl***e@example.com" "claude account listed"
 zorua use alt >/dev/null 2>&1
 [[ $CLAUDE_CONFIG_DIR == $HOME/.claude-alt ]] || die "zorua use alt did not set CLAUDE_CONFIG_DIR"
 print -rn -- "$RPROMPT" | grep -q "claude:alt" || die "claude marker missing: $RPROMPT"

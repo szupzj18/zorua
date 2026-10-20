@@ -36,10 +36,11 @@ Uninstall: `curl -fsSL https://raw.githubusercontent.com/szupzj18/zorua/main/uni
 
 ## Commands
 
-    zorua                         list accounts (email, plan) and providers (endpoint, masked key, model)
+    zorua                         list accounts (masked email, plan) and providers (endpoint, masked key, model)
     zorua usage [-v]              same plus live limits (5h/7d windows, reset time); -v = detailed blocks (also: zorua ls -v)
-        --json                   machine-readable `zorua ls` / `zorua usage`: {version, generated_at, accounts[{name, agent, home, state, email, plan, until, usage{windows, error, age_seconds, relay, shadowed_by[{file, dir}], expired[{window_seconds, reset_ago_seconds}]}}], providers[{name, agent, endpoint, models}], bindings[{name, dir, kind}]}. Never contains tokens or provider keys
+        --json                   machine-readable `zorua ls` / `zorua usage`: {version, generated_at, accounts[{name, agent, home, state, email, plan, until, usage{windows, error, age_seconds, relay, shadowed_by[{file, dir}], expired[{window_seconds, reset_ago_seconds}]}}], providers[{name, agent, endpoint, models}], bindings[{name, dir, kind}]}. Never contains tokens or provider keys; email is masked unless --full
         --expiry                 also show the Codex subscription end date (or ZORUA_EXPIRY=1); hidden by default because it comes from a cached token and can be stale
+        --full                   show whole email addresses (or ZORUA_FULL_EMAIL=1; also for usage, pick and --json). By default the part before @ keeps its first 3 and last character (first 2 and last for 5-7 characters, at most half for 4 or fewer), e.g. jon***h@gmail.com; one address always gets the same mask, and look-alike addresses reveal more until they differ
     zorua setup                   interactive first-run wizard (adopt existing homes, sign in, add accounts, bind a directory)
     zorua add <name>              create account <name> (home ~/.codex-<name>) and run `codex login`
         --device-auth            headless device-code sign-in
@@ -126,7 +127,7 @@ Providers are listed after the accounts, one table per agent (for example "Provi
     ~/.codex, ~/.codex-<name>/            per-account Codex homes (auth.json, sessions, config)
     ~/.zorua/                      installed program and wrappers
 
-Environment variables: ZORUA_CONFIG_DIR (registry location), ZORUA_HOME (install dir), NO_COLOR (disable colors), ZORUA_COLOR=always (force colors), ZORUA_EXPIRY=1 (show Codex subscription end dates), ZORUA_CLAUDE_PROVIDER / ZORUA_CODEX_PROVIDER (active provider of each agent, set by Zorua), ZORUA_CLAUDE_MODEL / ZORUA_CODEX_MODEL (model alias picked inside it, set by Zorua), ZORUA_AUTO_ACTIVE and the other ZORUA_AUTO_* / ZORUA_PRE_AUTO_* variables (internal binding state).
+Environment variables: ZORUA_CONFIG_DIR (registry location), ZORUA_HOME (install dir), NO_COLOR (disable colors), ZORUA_COLOR=always (force colors), ZORUA_EXPIRY=1 (show Codex subscription end dates), ZORUA_FULL_EMAIL=1 (show whole email addresses), ZORUA_CLAUDE_PROVIDER / ZORUA_CODEX_PROVIDER (active provider of each agent, set by Zorua), ZORUA_CLAUDE_MODEL / ZORUA_CODEX_MODEL (model alias picked inside it, set by Zorua), ZORUA_AUTO_ACTIVE and the other ZORUA_AUTO_* / ZORUA_PRE_AUTO_* variables (internal binding state).
 On first run `default` is seeded and any ~/.codex-* directory that already contains an auth.json is registered automatically.
 
 ## Behavior worth knowing

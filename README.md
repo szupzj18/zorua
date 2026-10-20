@@ -37,7 +37,7 @@ $ zorua usage
 - **Parallel accounts.** The selection is an environment variable, so four panes can
   run four different sign-ins at the same time — Codex and Claude Code mixed.
 - **One list for both agents.** Accounts of both tools are listed in their own
-  sections with email and plan; names are unique across tools,
+  sections with a masked email and plan; names are unique across tools,
   so `zorua work` always means one account.
 - **Usage at a glance.** `zorua usage` draws the 5-hour and weekly windows of every
   account; `-v` adds the home directory, longer bars and credits.
@@ -85,7 +85,7 @@ zorua add client --home ~/homes/acme --no-login     # register an existing direc
 # Claude Code accounts (subscription logins)
 zorua add --claude alt               # creates ~/.claude-alt and runs claude auth login
 
-zorua                                # list accounts: email, plan
+zorua                                # list accounts: masked email, plan
 zorua usage                          # + 5h / 7d usage bars
 zorua use work                       # this shell now runs Codex as "work"
 zorua use alt                        # ...and Claude Code as "alt" (both can be active)
@@ -331,11 +331,11 @@ are blanked, so a relay's model names do not leak into another provider.
 
 | Command | What it does |
 |---|---|
-| `zorua` / `zorua ls` | List accounts: email and plan (`-v`: home directory; `--expiry`: Codex subscription end date) |
+| `zorua` / `zorua ls` | List accounts: masked email and plan (`-v`: home directory; `--expiry`: Codex subscription end date; `--full`: whole emails, see [Privacy](#privacy)) |
 | `zorua usage` | The same with live 5h / 7d usage bars |
 | `zorua usage -v` / `zorua ls -v` | Detailed blocks per account (home, bars, credits) |
 | `zorua tag <name> [+tag …] [-tag …]` | View or edit account/provider labels in `tags.json` |
-| `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]` | Recommend an eligible account or provider, explain the choice and list alternatives |
+| `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json] [--full]` | Recommend an eligible account or provider, explain the choice and list alternatives |
 | `zorua doctor [name …] [--json]` | Read-only login, directory/file permissions, Claude proxy, Codex hook trust and provider connectivity checks, with repair hints |
 | `zorua setup` | Interactive first-run wizard |
 | `zorua add <name>` | Create a Codex account (new `CODEX_HOME`, sign-in) |
@@ -410,6 +410,7 @@ serves every shell.
 | `ZORUA_HOME` / `ZORUA_REF` | Installer: install directory / release tag to install |
 | `NO_COLOR` / `ZORUA_COLOR=always` | Disable / force colors (colors only appear on a terminal) |
 | `ZORUA_EXPIRY` | `1` shows the Codex subscription end date (same as `--expiry`); hidden by default because it is read from a cached token and can be stale |
+| `ZORUA_FULL_EMAIL` | `1` shows whole email addresses (same as `--full`), also in `--json` |
 | `ZORUA_CLAUDE_PROVIDER` / `ZORUA_CODEX_PROVIDER` | Set by Zorua: the active provider of each agent |
 | `ZORUA_PROMPT_TEXT` | Set by Zorua: the prompt marker text |
 
@@ -424,6 +425,26 @@ while running is `zorua usage` sending each Codex account's own token to OpenAI'
 endpoint. The Codex desktop app
 and the VS Code extensions do not read `CODEX_HOME` / `CLAUDE_CONFIG_DIR`; Zorua manages the
 command-line tools.
+
+Emails are masked wherever Zorua shows them: `zorua`, `usage`, `-v`, `pick`, the setup wizard
+and `--json` (so the web dashboard too). The domain stays; how much of the part before `@`
+is shown depends on its length:
+
+| Part before `@` | Shown | Example |
+|---|---|---|
+| 8 or more characters | first 3 and last | `jonathan.smith@gmail.com` → `jon***h@gmail.com` |
+| 5–7 characters | first 2 and last | `alice@example.edu` → `al***e@example.edu` |
+| 4 or fewer | at most half | `work@` → `w***k@`, `abc@` → `a***@`, `a@` → `***@` |
+
+`***` always has the same length, whatever it hides. One address always gets the same mask, so
+names that share a login still show the same ACCOUNT. When two different addresses in one list
+would look alike (`dev.alpha1@example.com`, `dev.bravo1@example.com`), both reveal more leading characters
+until they differ (`dev.a***1@`, `dev.b***1@`). Names that are not addresses (an organization
+name, `(not signed in)`, `API key`) are shown as they are.
+
+`--full` (on `zorua`/`ls`, `usage` and `pick`) or `ZORUA_FULL_EMAIL=1` shows whole addresses.
+`--json` is masked as well unless one of them is given, so scripts and logs do not collect full
+addresses by accident; shared-quota pooling in `usage` and `pick` always works on the real address.
 
 ## For AI agents
 

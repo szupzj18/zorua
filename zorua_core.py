@@ -400,8 +400,9 @@ def apply_binding(st, pwd):
 TITLES = {"codex": "Codex", "claude": "Claude Code"}
 
 
-def emit_json(all_acc, info, live, claude_age, claude_expired=None):
-    """Machine-readable ls / usage for other front ends. Never includes tokens or provider keys."""
+def emit_json(all_acc, info, live, claude_age, claude_expired=None, hide=lambda s: s):
+    """Machine-readable ls / usage for other front ends. Never includes tokens or provider keys;
+    `hide` masks the emails."""
     accounts = []
     for n, h, k in all_acc:
         i = info[n]
@@ -422,7 +423,7 @@ def emit_json(all_acc, info, live, claude_age, claude_expired=None):
                                          "used_percent": w.get("used_percent"),
                                          "reset_after_seconds": w.get("reset_after_seconds")})
         accounts.append({"name": n, "agent": k, "home": h, "state": i["state"],
-                         "email": i["email"], "plan": i["plan"], "until": i["until"], "usage": u})
+                         "email": hide(i["email"]), "plan": i["plan"], "until": i["until"], "usage": u})
     providers = [{"name": n, "agent": zp.agent(p), "endpoint": zp.endpoint(p), "models": zp.models(p)}
                  for n, p in zp.load(CONFIG_DIR).items()]
     bindings = [{"name": n, "dir": d, "kind": kind_of(n)} for n, d in read_tsv(BINDING_FILE)]
@@ -485,6 +486,43 @@ def read_claude_info(home):
         r["email"] = st.get("email") or st.get("orgName") or "(signed in)"
         r["plan"] = st.get("subscriptionType")
     return r
+
+
+# Emails are masked on screen and in --json (jon***h@gmail.com) unless --full or ZORUA_FULL_EMAIL=1.
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*")
+
+
+def mask_email(email, extra=0):
+    """jonathan.smith@gmail.com -> jon***h@gmail.com. The domain stays; the local part keeps its
+    first 3 and last character (first 2 and last when it has 5-7 characters, at most half when it
+    has 4 or fewer). `extra` reveals that many more leading characters."""
+    local, _, domain = email.rpartition("@")
+    n = len(local)
+    head, tail = (3, 1) if n >= 8 else (2, 1) if n >= 5 else (1, 1) if n == 4 else (1, 0) if n >= 2 else (0, 0)
+    head = min(head + extra, n - tail)
+    return local[:head] + "***" + local[n - tail:] + "@" + domain
+
+
+def email_masker(values, full=False):
+    """-> function that masks every address inside a string; anything else passes through.
+
+    Masks are worked out over all `values` together, so one address always looks the same, and
+    different addresses that would look alike reveal more leading characters until they differ.
+    """
+    if full or os.environ.get("ZORUA_FULL_EMAIL") == "1":
+        return lambda s: s
+    extra = dict.fromkeys({m for v in values if v for m in EMAIL_RE.findall(v)}, 0)
+    while True:
+        seen = {}
+        for e in extra:
+            seen.setdefault(mask_email(e, extra[e]), []).append(e)
+        grow = [e for same in seen.values() if len(same) > 1 for e in same
+                if mask_email(e, extra[e] + 1) != mask_email(e, extra[e])]
+        if not grow:
+            break
+        for e in grow:
+            extra[e] += 1
+    return lambda s: EMAIL_RE.sub(lambda m: mask_email(m.group(), extra.get(m.group(), 0)), s) if s else s
 
 
 def token_expired(tokens):
@@ -568,7 +606,7 @@ def collect_usage(all_acc, online):
     return info, live, claude_age, claude_expired
 
 
-def render(online, verbose, expiry=False, as_json=False):
+def render(online, verbose, expiry=False, as_json=False, full=False):
     # The subscription end date is read from the cached sign-in token, which can be stale, so it
     # is only shown on request: --expiry, or ZORUA_EXPIRY=1.
     show_exp = expiry or os.environ.get("ZORUA_EXPIRY") == "1"
@@ -590,9 +628,10 @@ def render(online, verbose, expiry=False, as_json=False):
         return "\033[%sm%s\033[0m" % (code, s) if color and code else s
 
     info, live, claude_age, claude_expired = collect_usage(all_acc, online)
+    hide = email_masker([i["email"] for i in info.values()], full)
 
     if as_json:
-        emit_json(all_acc, info, live, claude_age, claude_expired)
+        emit_json(all_acc, info, live, claude_age, claude_expired, hide)
         return
 
     def ago(secs):
@@ -648,7 +687,7 @@ def render(online, verbose, expiry=False, as_json=False):
 
     def who(n):
         i = info[n]
-        return i["email"] or {"none": "(not signed in)", "apikey": "API key", "bad": "(unknown)"}.get(i["state"], "?")
+        return hide(i["email"]) or {"none": "(not signed in)", "apikey": "API key", "bad": "(unknown)"}.get(i["state"], "?")
 
     def mark(n):
         return paint("36", "●") if is_cur(n) else paint("33", "◆") if is_auto(n) else " "
@@ -838,7 +877,7 @@ def account_email(home):
 # --------------------------------------------------------------------------
 
 def cmd_ls(args, usage=False):
-    online, verbose, expiry, as_json = usage, False, False, False
+    online, verbose, expiry, as_json, full = usage, False, False, False, False
     for a in args:
         if a in ("-u", "--usage"):
             online = True
@@ -848,10 +887,12 @@ def cmd_ls(args, usage=False):
             expiry = True
         elif a == "--json":
             as_json = True
+        elif a == "--full":
+            full = True
         else:
-            err("zorua ls: unknown option %s (use -v, --expiry, --json)" % a)
+            err("zorua ls: unknown option %s (use -v, --expiry, --json, --full)" % a)
             return 1
-    render(online, verbose, expiry, as_json)
+    render(online, verbose, expiry, as_json, full)
     return 0
 
 
@@ -945,16 +986,18 @@ def _pick_model(cat, sel):
 
 def cmd_pick(args):
     opts = {"--kind": "", "--needs": "", "--avoid": "", "--model": ""}
-    as_json, i = False, 0
+    as_json, full, i = False, False, 0
     while i < len(args):
         a = args[i]
         if a == "--json":
             as_json = True
+        elif a == "--full":
+            full = True
         elif a in opts and i + 1 < len(args) and not args[i + 1].startswith("--"):
             opts[a] = args[i + 1]
             i += 1
         else:
-            err("usage: zorua pick --kind codex|claude [--needs tag,...] [--avoid tag,...] [--model ID-or-prefix] [--json]")
+            err("usage: zorua pick --kind codex|claude [--needs tag,...] [--avoid tag,...] [--model ID-or-prefix] [--json] [--full]")
             return 1
         i += 1
     kind = opts["--kind"]
@@ -1042,6 +1085,9 @@ def cmd_pick(args):
         else:
             pools.add(pool)
             ranked.append(c)
+    hide = email_masker([c["email"] for c in ranked], full)
+    for c in ranked:
+        c["email"] = hide(c["email"])
     result = {"recommendation": ranked[0] if ranked else None, "alternatives": ranked[1:], "excluded": excluded}
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -2378,6 +2424,8 @@ def hook_installed(name):
 
 
 HELP = """  zorua                         list accounts, emails, plan and subscription expiry
+                                emails are masked (jon***h@gmail.com); --full (or ZORUA_FULL_EMAIL=1)
+                                shows them whole, also for usage, pick and --json
   zorua setup                   interactive first-run wizard (adopt homes, sign in, add, bind)
   zorua usage [-v]              live limits (5h/7d bars); -v = detailed blocks (also: zorua ls -v)
                                 add --expiry (or ZORUA_EXPIRY=1) to show Codex subscription end dates;
@@ -2471,7 +2519,8 @@ def cmd_setup(st):
             print(" - skipping %s: '%s' is not a usable account name (register it with: zorua add <name> --home %s --no-login)"
                   % (short(d), name, short(d)))
             continue
-        if confirm(" Found signed-in home %s (%s). Register as '%s'?" % (short(d), account_email(d), name), "y"):
+        email = account_email(d)
+        if confirm(" Found signed-in home %s (%s). Register as '%s'?" % (short(d), email_masker([email])(email), name), "y"):
             write_tsv(ACCOUNT_FILE, accounts() + [(name, d)])
 
     for n, p in accounts():
