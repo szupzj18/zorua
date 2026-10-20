@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config"
-unset CODEX_HOME ZORUA_AUTO_ACTIVE CLAUDE_CONFIG_DIR ZORUA_AUTO_CLAUDE ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
+unset CODEX_HOME ZORUA_AUTO_ACTIVE CLAUDE_CONFIG_DIR ZORUA_AUTO_CLAUDE ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL GROK_HOME ZORUA_AUTO_GROK GROK_AUTH GROK_AUTH_PATH
 mkdir -p "$HOME"
 export ZORUA_CONFIG_DIR="$XDG_CONFIG_HOME/zorua"
 unset ZORUA_TEST_KEYCHAIN
@@ -193,6 +193,50 @@ zorua rm alt --purge >/dev/null
 not_contains "$(zorua ls --full)" "claude@example.com" "rm unregisters claude account"
 export PATH=$OLDPATH
 ok "rm claude account"
+
+
+# ---- Grok CLI accounts (fake grok; its token is expired, so usage never calls out) ----
+
+mkdir -p "$TMP/gbin"
+cp "$ROOT/tests/fake-grok" "$TMP/gbin/grok"
+PATH="$TMP/gbin:$PATH" zorua add --grok gx --device-auth > "$TMP/gadd.out"
+contains "$(cat "$TMP/gadd.out")" "LOGIN_ARGS=login --device-auth" "add --grok --device-auth runs grok login --device-auth"
+[ -f "$XDG_CONFIG_HOME/zorua/grok-accounts.tsv" ] || die "grok registry not written"
+out=$(zorua ls)
+contains "$out" "gro***r@example.com" "grok email from auth.json, masked"
+contains "$out" "Grok" "grok accounts get their own section"
+if zorua add --grok work --no-login 2>/dev/null; then die "name clash across kinds must fail"; fi
+zorua ls --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+a = {a["name"]: a for a in d["accounts"]}
+assert a["gx"]["agent"] == "grok" and a["gx"]["state"] == "ok" and a["gx"]["plan"] is None, a["gx"]
+assert a["work"]["agent"] == "codex" and set(a["gx"]) == set(a["work"]), a
+' || die "ls --json lists grok accounts with the same fields"
+not_contains "$(zorua ls --json)" "fake-refresh-token" "ls --json must not print grok tokens"
+contains "$(zorua usage)" "token expired (run grok once to refresh)" "usage asks for grok instead of calling out"
+warn=$(GROK_AUTH_PATH=/elsewhere zorua use gx 2>&1 >/dev/null) || true
+contains "$warn" "GROK_AUTH_PATH" "override warning"
+zorua use gx >/dev/null 2>&1
+[ "$GROK_HOME" = "$HOME/.grok-gx" ] || die "use did not set GROK_HOME"
+zorua use work >/dev/null
+[ "$ZORUA_PROMPT_TEXT" = "[codex:work grok:gx]" ] || die "combined prompt: $ZORUA_PROMPT_TEXT"
+out=$(GROK_AUTH_PATH=/elsewhere PATH="$TMP/gbin:$PATH" zorua gx -p hi)
+contains "$out" "FAKE_GROK_HOME=$HOME/.grok-gx" "one-shot grok home"
+contains "$out" "GROK_AUTH_PATH=unset" "one-shot drops GROK_AUTH_PATH"
+contains "$out" "ARGS=-p hi" "one-shot args"
+zorua off >/dev/null
+[ -z "${GROK_HOME:-}" ] && [ -z "${CODEX_HOME:-}" ] || die "off must clear GROK_HOME too"
+cd "$TMP/proj"
+zorua bind gx >/dev/null
+[ "$GROK_HOME" = "$HOME/.grok-gx" ] && [ "$ZORUA_AUTO_GROK" = gx ] || die "grok bind did not apply"
+contains "$(zorua binds)" "(grok)" "binds marks grok accounts"
+: > "$XDG_CONFIG_HOME/zorua/bindings.tsv"      # no bindings left: only ZORUA_AUTO_GROK makes the hook run
+cd "$HOME"; _zorua_prompt_hook
+[ -z "${GROK_HOME:-}" ] && [ -z "$ZORUA_AUTO_GROK" ] || die "leaving must restore GROK_HOME"
+zorua rm gx --purge >/dev/null
+[ ! -d "$HOME/.grok-gx" ] || die "purge must delete the grok home"
+ok "grok accounts: add, ls, use, one-shot, bind, rm"
 
 
 # ---- Claude usage via the status-line relay --------------------------------

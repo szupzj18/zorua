@@ -61,6 +61,10 @@ s, r = post({"action":"account.login","name":"w1"}); check("codex login job star
 time.sleep(3); j = get("/api/login?name=w1")["job"]; check("codex login failed cleanly", j["status"] == "failed", j)
 check("login unknown account 400", post({"action":"account.login","name":"zzz"})[0] == 400)
 
+# --- Grok accounts are CLI-only for now: the dashboard leaves them out (checked with the next fresh state)
+os.makedirs(ROOT + "/home/.grok-g1")
+with open(ROOT + "/cfg/grok-accounts.tsv", "a") as f: f.write("g1\t%s/home/.grok-g1\n" % ROOT)
+
 # --- providers (key must never come back)
 KEY = "sk-test-SECRET-1234567890"
 s, r = post({"action":"provider.add","agent":"claude","name":"kimi2","baseUrl":"https://api.moonshot.cn/anthropic","key":KEY,"model":"kimi-k2"}); check("add claude provider", s == 200, r)
@@ -71,6 +75,7 @@ check("credentials in URL rejected", post({"action":"provider.add","agent":"clau
 s, r = post({"action":"provider.add","agent":"claude","name":"kimi2","baseUrl":"https://x.example","key":KEY}); check("dup provider -> 422, key not echoed", s == 422 and KEY not in json.dumps(r), r)
 raw = json.dumps(get("/api/state?refresh=1"))
 check("state lists providers, no key", "kimi2" in raw and "ds2" in raw and KEY not in raw)
+check("grok accounts stay out of the dashboard", '"g1"' not in raw and '"w1"' in raw)
 cfg = open(ROOT + "/cfg/providers.json").read(); check("key stored by zorua (0600)", KEY in cfg and oct(os.stat(ROOT + "/cfg/providers.json").st_mode & 0o777) == "0o600")
 # --- provider editor: masked by default, revealed on request, saved through `provider put`
 s, r = prov("kimi2"); doc = r.get("doc", {})

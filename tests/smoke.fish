@@ -14,6 +14,9 @@ cp $root/tests/fake-security $tmp/safety-bin/security
 chmod +x $tmp/safety-bin/security
 set -gx PATH $tmp/safety-bin $PATH
 set -e CODEX_HOME
+set -e GROK_HOME
+set -e GROK_AUTH
+set -e GROK_AUTH_PATH
 mkdir -p $HOME
 
 set -g n 0
@@ -110,6 +113,32 @@ test -z "$CLAUDE_CONFIG_DIR"; or die "use - did not clear CLAUDE_CONFIG_DIR"
 zorua rm alt --purge >/dev/null
 set -gx PATH $oldpath
 ok "claude accounts"
+
+# ---- grok accounts (fake grok; its token is expired, so usage never calls out) ----
+mkdir $tmp/gbin
+cp $root/tests/fake-grok $tmp/gbin/grok
+set -l gpath $PATH
+set -gx PATH $tmp/gbin $PATH
+zorua add --grok gx >/dev/null; or die "add --grok failed"
+test -f $HOME/.grok-gx/auth.json; or die "add --grok must sign in through grok login"
+contains_str (zorua ls | string collect) "gro***r@example.com" "grok account listed"
+contains_str (zorua usage | string collect) "token expired (run grok once to refresh)" "usage asks for grok instead of calling out"
+zorua use gx >/dev/null 2>&1
+test "$GROK_HOME" = "$HOME/.grok-gx"; or die "use gx did not set GROK_HOME ($GROK_HOME)"
+test "$ZORUA_PROMPT_TEXT" = "[grok:gx]"; or die "prompt text: $ZORUA_PROMPT_TEXT"
+zorua use - >/dev/null
+test -z "$GROK_HOME"; or die "use - did not clear GROK_HOME"
+mkdir -p $tmp/gproj
+cd $tmp/gproj
+zorua bind gx >/dev/null
+test "$GROK_HOME" = "$HOME/.grok-gx" -a "$ZORUA_AUTO_GROK" = gx; or die "grok bind did not apply"
+printf '' > $XDG_CONFIG_HOME/zorua/bindings.tsv    # no bindings left: only ZORUA_AUTO_GROK makes the hook run
+cd $HOME
+test -z "$GROK_HOME" -a -z "$ZORUA_AUTO_GROK"; or die "leaving must restore GROK_HOME ($GROK_HOME)"
+zorua rm gx --purge >/dev/null
+test -d $HOME/.grok-gx; and die "rm --purge must delete the grok home"
+set -gx PATH $gpath
+ok "grok accounts"
 
 # ---- providers ----------------------------------------------------------------
 mkdir -p $HOME/.claude

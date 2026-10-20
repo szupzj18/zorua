@@ -5,12 +5,13 @@
 <h1 align="center">Zorua</h1>
 
 <p align="center">
-  <b>Run several Codex and Claude Code accounts side by side — one per terminal.</b><br>
+  <b>Run several Codex, Claude Code and Grok accounts side by side — one per terminal.</b><br>
   zsh · bash · fish
 </p>
 
 Zorua keeps your AI coding agents' accounts apart. Every account lives in its own
-directory (`CODEX_HOME` for the OpenAI Codex CLI, `CLAUDE_CONFIG_DIR` for Claude Code),
+directory (`CODEX_HOME` for the OpenAI Codex CLI, `CLAUDE_CONFIG_DIR` for Claude Code,
+`GROK_HOME` for the Grok CLI),
 so each has its own sign-in, sessions, settings and usage quota. A shell picks one
 account per terminal: no restart, no global "active account" that flips every other
 window. Repositories can be bound to the account that owns them and switch
@@ -35,8 +36,8 @@ $ zorua usage
 ## What it does
 
 - **Parallel accounts.** The selection is an environment variable, so four panes can
-  run four different sign-ins at the same time — Codex and Claude Code mixed.
-- **One list for both agents.** Accounts of both tools are listed in their own
+  run four different sign-ins at the same time — Codex, Claude Code and Grok mixed.
+- **One list for every agent.** Accounts of each tool are listed in their own
   sections with a masked email and plan; names are unique across tools,
   so `zorua work` always means one account.
 - **Usage at a glance.** `zorua usage` draws the 5-hour and weekly windows of every
@@ -57,7 +58,7 @@ $ zorua usage
 
 Requires zsh 5.3+, bash 3.2+ or fish 3+ (any of them; the macOS defaults are fine),
 `python3` 3.8+, and the agent CLIs you want to use ([Codex CLI](https://developers.openai.com/codex)
-and/or [Claude Code](https://code.claude.com)) on `PATH`.
+and/or [Claude Code](https://code.claude.com) and/or the Grok CLI, `grok`) on `PATH`.
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/szupzj18/zorua/main/install.sh | sh
@@ -85,6 +86,10 @@ zorua add client --home ~/homes/acme --no-login     # register an existing direc
 # Claude Code accounts (subscription logins)
 zorua add --claude alt               # creates ~/.claude-alt and runs claude auth login
 
+# Grok CLI accounts
+zorua add --grok gx                  # creates ~/.grok-gx and runs grok login
+zorua add --grok main --home ~/.grok --no-login     # register the sign-in you already have
+
 zorua                                # list accounts: masked email, plan
 zorua usage                          # + 5h / 7d usage bars
 zorua use work                       # this shell now runs Codex as "work"
@@ -92,6 +97,7 @@ zorua use alt                        # ...and Claude Code as "alt" (both can be 
 zorua use -                          # back to the defaults
 zorua work exec "explain this repo"  # one-shot, shell unchanged
 zorua alt -p "hello"                 # one-shot for a Claude Code account
+zorua gx -p "hello"                  # ...and for a Grok account
 ```
 
 `zorua use` only affects the current shell: open another terminal and `zorua use side`
@@ -101,13 +107,13 @@ accounts signed in works naturally.
 
 ## How accounts are kept apart
 
-| | Codex CLI | Claude Code |
-|---|---|---|
-| Account directory | `~/.codex-<name>` | `~/.claude-<name>` |
-| Selected through | `CODEX_HOME` | `CLAUDE_CONFIG_DIR` |
-| Sign-in | `codex login` | `claude auth login` (claude.ai subscription) |
-| Plan and email | decoded locally from the login token | `claude auth status` |
-| 5h / 7d usage | live, queried with the account's own token | cached from Claude Code's status line (below) |
+| | Codex CLI | Claude Code | Grok CLI |
+|---|---|---|---|
+| Account directory | `~/.codex-<name>` | `~/.claude-<name>` | `~/.grok-<name>` |
+| Selected through | `CODEX_HOME` | `CLAUDE_CONFIG_DIR` | `GROK_HOME` |
+| Sign-in | `codex login` | `claude auth login` (claude.ai subscription) | `grok login` (`--device-auth` for headless) |
+| Plan and email | decoded locally from the login token | `claude auth status` | email read locally from `auth.json`; the plan is not exposed |
+| 5h / 7d usage | live, queried with the account's own token | cached from Claude Code's status line (below) | the weekly usage period, live with the account's own token (below) |
 
 The default Codex account is `~/.codex`. Zorua does not modify the contents of an account
 directory, with one opt-in exception: `zorua hook` edits a Claude account's status-line
@@ -126,6 +132,20 @@ Good to know when using Claude Code accounts:
 - On macOS the Keychain entry of a Claude account is named after the exact path of its
   directory, so a trailing `/` would address a different entry. `zorua add` stores an
   absolute path without one.
+
+Good to know when using Grok accounts:
+
+- `GROK_HOME` moves all of Grok's state, not just the sign-in: `config.toml`, skills,
+  plugins, MCP servers, memory and sessions are per account too. A new account starts
+  empty; copy what you want from `~/.grok`.
+- `GROK_AUTH` (an inline sign-in) and `GROK_AUTH_PATH` (another `auth.json`) outrank the
+  account's own sign-in. `zorua use` warns when either is set; the one-shot form
+  `zorua gx …` removes them for that run. `XAI_API_KEY` is left alone: Grok only falls
+  back to it when the account is not signed in.
+- Grok rotates its refresh token when it renews a sign-in, so never copy an `auth.json`
+  between accounts; sign each one in with `zorua login <name>`.
+- `~/.grok` also holds the `grok` program itself, so `zorua rm` never deletes it, even with
+  `--purge`, when it is registered as an account.
 
 ## Usage windows
 
@@ -163,6 +183,13 @@ zorua hook install alt --shadows     # also wrap a status line that hides the re
   missing, so a status line never breaks.
 - `sh uninstall.sh --purge` restores all status lines automatically.
 
+Grok accounts: `zorua usage` asks the endpoint behind Grok's own `/usage` screen (not a
+public API) for the account's current usage period, with the account's own token, and shows
+it in the 7D column with its reset time. The share used is shown when Grok reports it; when it
+does not, the column shows `–` and a note says so, rather than 0%. Grok renews its short-lived
+token only while it runs, so after a few idle hours the row says `token expired (run grok once
+to refresh)`; Zorua never renews the token itself. Grok accounts have no 5-hour window.
+
 ## Recommend an account
 
 ```shell
@@ -195,7 +222,7 @@ zorua doctor work alt --json     # named accounts, machine-readable results
 ```
 
 Doctor reads configuration and never initializes or migrates the registry. It checks
-local Codex credentials/expiry, Claude `auth status`, directory ownership/permissions,
+local Codex credentials/expiry, Claude `auth status`, a Grok sign-in in `auth.json`, directory ownership/permissions,
 private auth/settings files, Claude proxy settings and enabled Codex account hook trust.
 A missing proxy is a warning because some networks allow direct access. Providers use
 the existing check logic (including its one-token fallback when necessary). Failures
@@ -226,7 +253,7 @@ zorua unbind                      # remove the binding for the current directory
 
 A manual `zorua use` inside a bound directory wins until you leave it. Bindings match by
 longest directory prefix, so nested projects can differ from their parent, and a
-directory can bind one Codex and one Claude Code account at once.
+directory can bind one Codex, one Claude Code and one Grok account at once.
 
 ## Providers (third-party Claude Code and Codex endpoints)
 
@@ -340,12 +367,13 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua setup` | Interactive first-run wizard |
 | `zorua add <name>` | Create a Codex account (new `CODEX_HOME`, sign-in) |
 | `zorua add --claude <name>` | Create a Claude Code account (new `CLAUDE_CONFIG_DIR`, sign-in; seeded from `claude-settings.json` if present) |
+| `zorua add --grok <name>` | Create a Grok CLI account (new `GROK_HOME`, sign-in through `grok login`) |
 | `zorua add … --home DIR` | Register an existing directory instead |
-| `zorua add … --no-login` / `--device-auth` | Skip sign-in / headless sign-in (Codex) |
+| `zorua add … --no-login` / `--device-auth` | Skip sign-in / headless sign-in (Codex, Grok) |
 | `zorua login <name>` | (Re)run the sign-in of one account |
 | `zorua use <name>` / `zorua use -` / `zorua off` | Switch this shell to an account / back to defaults |
 | `zorua off providers` | Clear only the providers of this shell, keep the accounts |
-| `zorua <name> [args…]` | One-shot: run `codex` or `claude` under that account |
+| `zorua <name> [args…]` | One-shot: run `codex`, `claude` or `grok` under that account |
 | `zorua bind [name]` / `unbind [dir]` / `binds` | Manage directory bindings |
 | `zorua provider add\|ls\|show\|rm\|import` | Manage third-party Claude Code and Codex providers (see above) |
 | `zorua provider get <name> [--reveal]` / `put <name>` | One provider as JSON (keys always masked, including the legacy `--reveal` flag) / replace it from JSON on stdin; `put` keeps `providers.json.bak`. The web dashboard edits providers through these |
@@ -371,13 +399,13 @@ are blanked, so a relay's model names do not leak into another provider.
 | Tab completion (commands, account names) | yes | yes | yes |
 | Prompt marker | right prompt, automatic | `$ZORUA_PROMPT_TEXT` | `$ZORUA_PROMPT_TEXT` |
 
-The marker shows the active accounts — `[codex:work]`, `[claude:alt]`,
+The marker shows the active accounts — `[codex:work]`, `[claude:alt]`, `[grok:gx]`,
 `[codex:work claude:alt]`, with `:auto` for directory bindings. For bash:
 `PS1='$ZORUA_PROMPT_TEXT \u@\h:\w\$ '`; for fish:
 `function fish_right_prompt; echo $ZORUA_PROMPT_TEXT; end`.
 
 How it works: the `zorua` shell function runs `zorua_core.py`, which does all the work and
-writes any environment change it needs (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, binding state,
+writes any environment change it needs (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, binding state,
 prompt marker) to a temporary file that the wrapper then sources. One implementation
 serves every shell.
 
@@ -387,7 +415,7 @@ serves every shell.
 
 **[Try it live](https://szupzj18.github.io/zorua/demo/)**: the real dashboard running in your browser on made-up data (nothing leaves the page).
 
-`web/` holds a small local dashboard (Next.js + Tailwind CSS) for accounts, 5h/7d usage, providers and directory bindings, with add/remove/sign-in and a provider editor (env variables, key rotation, model catalog). Dark by default, light follows the system. It reads `zorua usage --json`, listens on `127.0.0.1:4747` only and runs the matching `zorua` commands for changes. See [web/README.md](web/README.md).
+`web/` holds a small local dashboard (Next.js + Tailwind CSS) for accounts, 5h/7d usage, providers and directory bindings, with add/remove/sign-in and a provider editor (env variables, key rotation, model catalog). Dark by default, light follows the system. It reads `zorua usage --json`, listens on `127.0.0.1:4747` only and runs the matching `zorua` commands for changes. Grok accounts are not shown there yet; manage them with the `zorua` command. See [web/README.md](web/README.md).
 
 ## Files and configuration
 
@@ -395,13 +423,15 @@ serves every shell.
 ~/.zorua/                              the program: zorua_core.py, zorua_providers.py, zorua_statusline.py, zorua.{zsh,bash,fish}
 ~/.config/zorua/accounts.tsv           Codex accounts       <name>\t<CODEX_HOME>
 ~/.config/zorua/claude-accounts.tsv    Claude Code accounts <name>\t<CLAUDE_CONFIG_DIR>
+~/.config/zorua/grok-accounts.tsv      Grok CLI accounts    <name>\t<GROK_HOME>
 ~/.config/zorua/claude-settings.json   optional template copied to a new Claude account's settings.json (e.g. proxy env); never overwrites
 ~/.config/zorua/tags.json              explicit labels by account/provider name
-~/.config/zorua/usage-cache.json       shared 30-second Codex usage cache (0600; no tokens)
+~/.config/zorua/usage-cache.json       shared 30-second Codex and Grok usage cache (0600; no tokens)
 ~/.config/zorua/bindings.tsv           directory bindings   <name>\t<path>
 ~/.config/zorua/providers.json         Claude Code and Codex providers with Keychain references on macOS (file fallback mode 0600); run/<name>.settings.json is generated
 ~/.codex  ~/.codex-<name>/             Codex homes     (untouched)
 ~/.claude-<name>/                      Claude Code config directories
+~/.grok-<name>/                        Grok homes (GROK_HOME)
 ```
 
 | Variable | Effect |
@@ -420,9 +450,9 @@ already hold an `auth.json` are registered.
 ## Privacy
 
 Emails, plans and (on request) expiry dates are decoded locally from the login tokens or taken from
-`claude auth status`; no token is ever printed. The only network access Zorua itself makes
-while running is `zorua usage` sending each Codex account's own token to OpenAI's usage
-endpoint. The Codex desktop app
+`claude auth status`, or read from a Grok account's `auth.json`; no token is ever printed. The only
+network access Zorua itself makes while running is `zorua usage` sending each Codex account's own
+token to OpenAI's usage endpoint and each Grok account's own token to xAI's (`cli-chat-proxy.grok.com`). The Codex desktop app
 and the VS Code extensions do not read `CODEX_HOME` / `CLAUDE_CONFIG_DIR`; Zorua manages the
 command-line tools.
 
@@ -518,4 +548,4 @@ generated notes.
 Zorua is an independent project. The name is a nod to the Pokémon of the same name (an
 illusion fox that takes on other forms); it is not affiliated with or endorsed by
 Nintendo, Game Freak, Creatures or The Pokémon Company. Codex is a product of OpenAI and
-Claude Code of Anthropic; this tool is not affiliated with either.
+Claude Code of Anthropic, Grok of xAI; this tool is not affiliated with any of them.

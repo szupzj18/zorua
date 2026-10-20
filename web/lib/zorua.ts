@@ -50,11 +50,15 @@ export function runCore(
 
 async function readState(): Promise<ZoruaState> {
   const out = await runCore(["usage", "--json"]);
+  let state: ZoruaState;
   try {
-    return JSON.parse(out) as ZoruaState;
+    state = JSON.parse(out) as ZoruaState;
   } catch {
     throw new ZoruaError("zorua returned invalid JSON");
   }
+  // The dashboard knows Codex and Claude Code accounts; Grok accounts (and any later agent) stay CLI-only for now.
+  state.accounts = state.accounts.filter((a) => a.agent === "codex" || a.agent === "claude");
+  return state;
 }
 
 function refresh(): Promise<ZoruaState> {

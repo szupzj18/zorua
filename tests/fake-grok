@@ -1,0 +1,21 @@
+#!/bin/sh
+# Test double for the `grok` CLI: `grok login` signs $GROK_HOME in by writing an auth.json shaped
+# like the real one, for a made-up account. Its bearer expired long ago, so `zorua usage` reports
+# that instead of calling out.
+case "$1" in
+  login)
+    mkdir -p "$GROK_HOME"
+    python3 - "$GROK_HOME/auth.json" "${FAKE_GROK_EMAIL:-grok.user@example.com}" <<'PY'
+import base64, json, os, sys
+b = lambda o: base64.urlsafe_b64encode(json.dumps(o).encode()).decode().rstrip("=")
+entry = {"key": b({"alg": "none"}) + "." + b({"exp": 1000000000, "tier": 1}) + ".sig",
+         "refresh_token": "fake-refresh-token", "email": sys.argv[2], "auth_mode": "oidc"}
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump({"https://auth.example.invalid::00000000-0000-0000-0000-000000000000": entry}, f)
+PY
+    echo "LOGIN_ARGS=$*" ;;
+  *) echo "FAKE_GROK_HOME=$GROK_HOME"
+     echo "GROK_AUTH_PATH=${GROK_AUTH_PATH:-unset}"
+     echo "ARGS=$*" ;;
+esac
