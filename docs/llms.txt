@@ -2,7 +2,7 @@
 
 (formerly CodeX Switch / codex-switch; renamed in 0.4.0. Since 0.5.0 the command is `zorua`; the old name `cx` no longer exists. Re-running the installer migrates old installs. Environment variables are ZORUA_*; the old CX_CONFIG_DIR / CX_HOME / CX_COLOR are still honoured.)
 
-> Parallel multi-account manager for the OpenAI Codex CLI and Claude Code. Each account gets its own CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude Code) directory; a shell function `zorua` picks one per terminal, so several accounts can be used at the same time. Works in zsh, bash and fish. MIT licensed.
+> Parallel multi-account manager for the OpenAI Codex CLI, Claude Code and the Grok CLI. Each account gets its own CODEX_HOME (Codex), CLAUDE_CONFIG_DIR (Claude Code) or GROK_HOME (Grok) directory; a shell function `zorua` picks one per terminal, so several accounts can be used at the same time. Works in zsh, bash and fish. MIT licensed.
 
 Repo: https://github.com/szupzj18/zorua
 Site: https://szupzj18.github.io/zorua/
@@ -13,17 +13,18 @@ Full docs: https://github.com/szupzj18/zorua/blob/main/README.md
 
 - One Python 3.8+ program (`zorua_core.py`, standard library only) plus a thin wrapper per shell (`zorua.zsh`, `.bash`, `.fish`).
 - Optional and separate: `web/` is a local dashboard (Next.js, Node 20+; `npm ci && npm run build && npm start` in `web/`, then http://127.0.0.1:4747, loopback only). It is not installed by `install.sh` and not in the release tarball. It shows accounts, 5h/7d usage, providers and bindings, and manages them by running the `zorua` commands above (add/remove/sign-in, provider add/remove, bind/unbind, and a provider editor built on `provider get` / `put`). Dark theme by default, light follows the system. Cmd/Ctrl+K (or /) opens a command palette and ? lists the single-key shortcuts. A live demo with made-up data (the real dashboard running in the browser, no server) is at https://szupzj18.github.io/zorua/demo/ and embedded on the landing page; build it with `sh web/demo/build.sh`. Zorua itself still has no daemon.
-- Isolation is done by setting the `CODEX_HOME` / `CLAUDE_CONFIG_DIR` environment variables. There is no global "active account", no daemon and no proxy. The shell also gets `claude` and `codex` functions that pass straight through to the real binary unless a provider is active in that shell.
+- Isolation is done by setting the `CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `GROK_HOME` environment variables. There is no global "active account", no daemon and no proxy. The shell also gets `claude` and `codex` functions that pass straight through to the real binary unless a provider is active in that shell.
 - It manages the Codex CLI and Claude Code (subscription logins). The Codex desktop app and the VS Code extension do not read CODEX_HOME.
 - Claude Code accounts use Claude Code's own multi-account mechanism: one CLAUDE_CONFIG_DIR per account (settings, history and the login are per directory; on macOS the Keychain entry name is derived from the directory path).
+- Grok accounts use GROK_HOME, which moves all of Grok's state (config.toml, skills, plugins, sessions, memory and the auth.json sign-in). GROK_AUTH / GROK_AUTH_PATH outrank the account's sign-in: `zorua use` warns about them and the one-shot form removes them. Never copy auth.json between accounts (Grok rotates the refresh token). The Grok web dashboard view does not exist yet: Grok accounts are CLI-only.
 - It never modifies anything inside an account's home directory.
-- The state of one terminal is four environment variables, one slot each: `CODEX_HOME` (Codex account), `CLAUDE_CONFIG_DIR` (Claude Code account), `ZORUA_CODEX_PROVIDER` and `ZORUA_CLAUDE_PROVIDER` (third-party providers). `zorua use` fills one slot and leaves the others alone; `zorua off providers` clears the two provider slots; `zorua off` clears all four.
+- The state of one terminal is five environment variables, one slot each: `CODEX_HOME` (Codex account), `CLAUDE_CONFIG_DIR` (Claude Code account), `GROK_HOME` (Grok account), `ZORUA_CODEX_PROVIDER` and `ZORUA_CLAUDE_PROVIDER` (third-party providers). `zorua use` fills one slot and leaves the others alone; `zorua off providers` clears the two provider slots; `zorua off` clears all five.
 
 ## Requirements
 
 - zsh 5.3+, bash 3.2+ or fish 3+
 - python3 3.8+
-- The official Codex CLI and/or Claude Code on PATH (needed for sign-in and one-shot runs)
+- The official Codex CLI, Claude Code and/or Grok CLI (`grok`) on PATH (needed for sign-in and one-shot runs)
 
 ## Install
 
@@ -38,7 +39,7 @@ Uninstall: `curl -fsSL https://raw.githubusercontent.com/szupzj18/zorua/main/uni
 
     zorua                         list accounts (masked email, plan) and providers (endpoint, masked key, model)
     zorua usage [-v]              same plus live limits (5h/7d windows, reset time); -v = detailed blocks (also: zorua ls -v)
-        --json                   machine-readable `zorua ls` / `zorua usage`: {version, generated_at, accounts[{name, agent, home, state, email, plan, until, usage{windows, error, age_seconds, relay, shadowed_by[{file, dir}], expired[{window_seconds, reset_ago_seconds}]}}], providers[{name, agent, endpoint, models}], bindings[{name, dir, kind}]}. Never contains tokens or provider keys; email is masked unless --full
+        --json                   machine-readable `zorua ls` / `zorua usage`: {version, generated_at, accounts[{name, agent, home, state, email, plan, until, usage{windows, error, age_seconds, relay, shadowed_by[{file, dir}], expired[{window_seconds, reset_ago_seconds}]}}], providers[{name, agent, endpoint, models}], bindings[{name, dir, kind}]}. accounts[].agent is codex, claude or grok (grok entries have the same fields; relay/shadowed_by/expired are null for them, plan is null and a window's used_percent may be null when Grok does not report it). Never contains tokens or provider keys; email is masked unless --full
         --expiry                 also show the Codex subscription end date (or ZORUA_EXPIRY=1); hidden by default because it comes from a cached token and can be stale
         --full                   show whole email addresses (or ZORUA_FULL_EMAIL=1; also for usage, pick and --json). By default the part before @ keeps its first 3 and last character (first 2 and last for 5-7 characters, at most half for 4 or fewer), e.g. jon***h@gmail.com; one address always gets the same mask, and look-alike addresses reveal more until they differ
     zorua setup                   interactive first-run wizard (adopt existing homes, sign in, add accounts, bind a directory)
@@ -47,10 +48,11 @@ Uninstall: `curl -fsSL https://raw.githubusercontent.com/szupzj18/zorua/main/uni
         --no-login               register without signing in (then: zorua login <name>)
         --home DIR               register an existing directory instead of ~/.codex-<name>
     zorua add --claude <name>     create a Claude Code subscription account (home ~/.claude-<name>) and run `claude auth login`; if ~/.config/zorua/claude-settings.json exists it is copied to the new account's settings.json (never overwriting)
-        --home DIR / --no-login also apply; --device-auth does not (Codex only)
+        --home DIR / --no-login also apply; --device-auth does not (Codex and Grok only)
+    zorua add --grok <name>       create a Grok CLI account (home ~/.grok-<name>) and run `grok login` under GROK_HOME; --home DIR / --no-login / --device-auth apply. Register the existing sign-in with: zorua add --grok main --home ~/.grok --no-login. `zorua` lists the email read locally from auth.json (masked); the plan is not exposed by Grok, so PLAN is –. `zorua usage` shows the weekly usage period (7D column, reset time) from the endpoint behind Grok's own /usage screen (not a public API), with the account's own token; the used share appears only when Grok reports it (otherwise – and a note, never 0%). An expired token (Grok renews it only while running) shows `token expired (run grok once to refresh)` and sends nothing; Zorua never renews it
     zorua hook install|remove|status <claude-account> [--dry-run]
                                wrap that account's Claude Code status-line command in a relay that caches rate_limits (5h/7d, claude.ai Pro/Max) to <config dir>/.zorua-usage.json so `zorua usage` can show them; reads no credentials, original command is preserved, settings.json is backed up. If the account has NO status line, install adds a minimal one and requires --yes (or an interactive confirmation) because Claude Code hides most footer keyboard hints while a status line is configured; remove deletes it again. The installed command uses $HOME-relative paths and falls back to the original command if the relay or python3 is missing; a status line in <dir>/.claude/settings{,.local}.json outranks the account's settings.json for sessions started in <dir> and hides the relay: `hook status` reports SHADOWED and `hook install <name> --shadows` wraps those files too (`hook remove <name> --shadows` undoes it); `zorua hook status` (no name) lists all Claude accounts and `zorua hook remove --all` restores them all (uninstall.sh --purge does this)
-    zorua login <name>            (re)run `codex login` (or `claude auth login`) for one account
+    zorua login <name>            (re)run `codex login` (or `claude auth login` / `grok login`) for one account
     zorua provider add <name> --base-url URL [--key K | --key-env VAR] [--api-key] [--model ROLE=ID]... [--env VAR=VALUE]... [--force]
                                add a third-party Claude Code provider (Anthropic-compatible). The key is prompted (hidden) if omitted. ROLE is one of default, opus, sonnet, haiku, subagent. --api-key sends the key as ANTHROPIC_API_KEY instead of ANTHROPIC_AUTH_TOKEN
     zorua provider add <name> --codex --base-url URL --model ID [--wire-api responses] [--key K | --key-env VAR] [--force]
@@ -68,10 +70,10 @@ Uninstall: `curl -fsSL https://raw.githubusercontent.com/szupzj18/zorua/main/uni
                                show / set the provider's default model, the one used without a per-shell pick (Claude: env ANTHROPIC_MODEL; Codex: model), stored in providers.json (previous file kept as providers.json.bak; the key is not touched). A full id that is not listed yet is added to the catalog. `-` (Claude only) removes ANTHROPIC_MODEL so claude uses its own /model choice; that choice lives in the account's settings.json and is shared by every provider, so zorua warns (and `zorua doctor` reports) when it is not one of the provider's models. Which model a launch uses: per-shell pick > provider default > Claude Code's /model > Claude Code's built-in default
     zorua provider import cc-switch [--dry-run] [--force] [--db PATH]
                                copy cc-switch's custom Claude and Codex providers that carry their own key; reads its database read-only, skips official logins and entries that point at cc-switch's local proxy
-    zorua use <name>              set CODEX_HOME (Codex account), CLAUDE_CONFIG_DIR (Claude account) or the provider slot of its agent (ZORUA_CLAUDE_PROVIDER / ZORUA_CODEX_PROVIDER) for THIS shell only; one Claude and one Codex provider can be active together
+    zorua use <name>              set CODEX_HOME (Codex account), CLAUDE_CONFIG_DIR (Claude account), GROK_HOME (Grok account) or the provider slot of its agent (ZORUA_CLAUDE_PROVIDER / ZORUA_CODEX_PROVIDER) for THIS shell only; one Claude and one Codex provider can be active together
     zorua use -   |  zorua off       clear the switch (back to the default account ~/.codex)
     zorua off providers           clear only the providers of this shell, keep the accounts
-    zorua <name> [args]           one-shot: run `codex` (or `claude`, for a Claude account) under that account or provider, e.g. zorua work exec "summarize this repo"; for Claude accounts inherited ANTHROPIC_* / CLAUDE_CODE_USE_* / CLAUDE_CODE_OAUTH_TOKEN are removed for the run
+    zorua <name> [args]           one-shot: run `codex` (or `claude` / `grok`, for a Claude / Grok account) under that account or provider, e.g. zorua work exec "summarize this repo"; for Claude accounts inherited ANTHROPIC_* / CLAUDE_CODE_USE_* / CLAUDE_CODE_OAUTH_TOKEN are removed for the run, for Grok accounts GROK_AUTH / GROK_AUTH_PATH
     zorua bind [name]             bind the current directory (and subdirectories) to an account; auto-switch on cd
     zorua unbind [dir]            remove a binding
     zorua binds                   list bindings
@@ -79,11 +81,11 @@ Uninstall: `curl -fsSL https://raw.githubusercontent.com/szupzj18/zorua/main/uni
     zorua prompt                  print the prompt marker, e.g. [codex:work] or [codex:work:auto]
     zorua version | zorua help
 
-Account and provider names: letters, digits, `-` and `_`; they must not collide with a command name, and are unique across Codex accounts, Claude accounts and providers (a provider belongs to exactly one agent). `default` is the built-in Codex account (~/.codex) and cannot be removed.
+Account and provider names: letters, digits, `-` and `_`; they must not collide with a command name, and are unique across Codex accounts, Claude accounts, Grok accounts and providers (a provider belongs to exactly one agent). `default` is the built-in Codex account (~/.codex) and cannot be removed.
 
 ## Example output
 
-`zorua usage` groups accounts by agent (headings appear only when both agents have accounts). Colors only on a TTY.
+`zorua usage` groups accounts by agent (headings appear only when more than one agent has accounts). Colors only on a TTY.
 
      Codex
        NAME     PLAN    5H           7D           RESET
@@ -100,7 +102,7 @@ Account and provider names: letters, digits, `-` and `_`; they must not collide 
 
 Providers are listed after the accounts, one table per agent (for example "Providers (Claude Code)" with NAME, ENDPOINT, KEY, MODELS).
 
-`●` marks the account or provider active in this shell, `◆` one switched by a directory binding. Codex windows are live (queried now); Claude windows are the last values cached by the status-line relay and show their age.
+`●` marks the account or provider active in this shell, `◆` one switched by a directory binding. Codex windows are live (queried now); Claude windows are the last values cached by the status-line relay and show their age; a Grok account has one live window, its weekly usage period.
 
 ## Guidance for agents
 
@@ -119,6 +121,7 @@ Providers are listed after the accounts, one table per agent (for example "Provi
 
     ~/.config/zorua/accounts.tsv   registered accounts: <name>\t<codex home>
     ~/.config/zorua/claude-accounts.tsv  Claude Code accounts: <name>\t<config dir>
+    ~/.config/zorua/grok-accounts.tsv    Grok CLI accounts: <name>\t<GROK_HOME>
     ~/.config/zorua/claude-settings.json  optional template copied to a new Claude account's settings.json (for example proxy env); never overwrites an existing file
     ~/.config/zorua/bindings.tsv   directory bindings:  <name>\t<absolute path>  (longest-prefix match, per tool; accounts and providers)
     ~/.config/zorua/providers.json Claude Code and Codex providers incl. API keys (mode 0600)

@@ -39,6 +39,7 @@ ACCOUNT_FILE = os.path.join(CONFIG_DIR, "accounts.tsv")
 CLAUDE_SETTINGS_TEMPLATE = os.path.join(CONFIG_DIR, "claude-settings.json")
 BINDING_FILE = os.path.join(CONFIG_DIR, "bindings.tsv")
 CLAUDE_FILE = os.path.join(CONFIG_DIR, "claude-accounts.tsv")
+GROK_FILE = os.path.join(CONFIG_DIR, "grok-accounts.tsv")
 SHELL = os.environ.get("ZORUA_SHELL", "zsh")
 RESERVED = {"doctor", "tag", "pick", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
             "unset", "help", "add", "rm", "bind", "unbind", "binds", "version",
@@ -175,10 +176,18 @@ def claude_accounts():
     return read_tsv(CLAUDE_FILE)
 
 
+# Grok CLI accounts, isolated through GROK_HOME (config, sessions and the auth.json sign-in).
+def grok_accounts():
+    return read_tsv(GROK_FILE)
+
+
+REGISTRY_FILES = {"codex": ACCOUNT_FILE, "claude": CLAUDE_FILE, "grok": GROK_FILE}
+
+
 def registry(kind):
     if is_provider(kind):
         return {n: n for n, p in zp.load(CONFIG_DIR).items() if zp.agent(p) == PROVIDER_AGENT[kind]}
-    return dict(claude_accounts() if kind == "claude" else accounts())
+    return dict(read_tsv(REGISTRY_FILES[kind]))
 
 
 def kind_of(name):
@@ -186,6 +195,8 @@ def kind_of(name):
         return "codex"
     if name in dict(claude_accounts()):
         return "claude"
+    if name in dict(grok_accounts()):
+        return "grok"
     p = zp.load(CONFIG_DIR).get(name)
     if p is not None:
         return AGENT_PROVIDER[zp.agent(p)]
@@ -197,13 +208,14 @@ def all_names():
 
 
 def all_accounts():
-    """-> [(name, home, kind)] Codex first, then Claude."""
-    return [(n, h, "codex") for n, h in accounts()] + [(n, h, "claude") for n, h in claude_accounts()]
+    """-> [(name, home, kind)] Codex first, then Claude, then Grok."""
+    return ([(n, h, "codex") for n, h in accounts()] + [(n, h, "claude") for n, h in claude_accounts()]
+            + [(n, h, "grok") for n, h in grok_accounts()])
 
 
 # For the provider kinds the "home" is the provider name itself (read by the `claude` / `codex`
 # shell functions). Each agent has its own provider slot, so one shell can hold one of each.
-VARS = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR",
+VARS = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "grok": "GROK_HOME",
         "claude_provider": "ZORUA_CLAUDE_PROVIDER", "codex_provider": "ZORUA_CODEX_PROVIDER"}
 KINDS = tuple(VARS)
 PROVIDER_AGENT = {"claude_provider": "claude", "codex_provider": "codex"}
@@ -219,6 +231,7 @@ def is_provider(kind):
 AUTO_VARS = {
     "codex": ("ZORUA_AUTO_ACTIVE", "ZORUA_AUTO_ACTIVE", "ZORUA_PRE_AUTO_HOME", "_ZORUA_PRE_AUTO_HOME"),
     "claude": ("ZORUA_AUTO_CLAUDE", "ZORUA_AUTO_CLAUDE", "ZORUA_PRE_AUTO_CLAUDE", "_ZORUA_PRE_AUTO_CLAUDE"),
+    "grok": ("ZORUA_AUTO_GROK", "ZORUA_AUTO_GROK", "ZORUA_PRE_AUTO_GROK", "_ZORUA_PRE_AUTO_GROK"),
     "claude_provider": ("ZORUA_AUTO_CLAUDE_PROVIDER", "ZORUA_AUTO_CLAUDE_PROVIDER",
                         "ZORUA_PRE_AUTO_CLAUDE_PROVIDER", "_ZORUA_PRE_AUTO_CLAUDE_PROVIDER"),
     "codex_provider": ("ZORUA_AUTO_CODEX_PROVIDER", "ZORUA_AUTO_CODEX_PROVIDER",
@@ -246,6 +259,18 @@ def claude_clean_env(home):
     if "ANTHROPIC_BASE_URL" in os.environ:
         env["ANTHROPIC_BASE_URL"] = OFFICIAL_URL
     env["CLAUDE_CONFIG_DIR"] = home
+    return env
+
+
+# Variables that make grok read a sign-in other than $GROK_HOME/auth.json: GROK_AUTH holds one
+# inline (JSON), GROK_AUTH_PATH points at another file.
+GROK_OVERRIDES = ("GROK_AUTH", "GROK_AUTH_PATH")
+
+
+def grok_env(home):
+    """Environment for running `grok` on the account in `home`, with the overrides above removed."""
+    env = {k: v for k, v in os.environ.items() if k not in GROK_OVERRIDES}
+    env["GROK_HOME"] = home
     return env
 
 
@@ -397,7 +422,7 @@ def apply_binding(st, pwd):
 # Rendering (account table / usage)
 # --------------------------------------------------------------------------
 
-TITLES = {"codex": "Codex", "claude": "Claude Code"}
+TITLES = {"codex": "Codex", "claude": "Claude Code", "grok": "Grok"}
 
 
 def emit_json(all_acc, info, live, claude_age, claude_expired=None, hide=lambda s: s):
@@ -475,6 +500,97 @@ def fetch_codex_usage(tok):
         r = getattr(e, "reason", e)
         return None, "network error: %s (check proxy)" % (str(r) or type(r).__name__)
 
+
+def grok_sign_in(home):
+    """-> the sign-in entry of $GROK_HOME/auth.json ({} when signed out); raises on an unreadable file.
+
+    grok keys its sign-ins by scope ("<issuer>::<client id>"); each holds the bearer ("key"), a
+    refresh token and the account's email. Nothing here is ever printed or sent anywhere but xAI.
+    """
+    with open(os.path.join(home, "auth.json")) as f:
+        d = json.load(f)
+    if not isinstance(d, dict):
+        raise ValueError("auth.json is not an object")
+    return next((v for v in d.values() if isinstance(v, dict) and (v.get("key") or v.get("refresh_token"))), {})
+
+
+def read_grok_info(home):
+    # The plan is not stored in a readable form (the token carries only a numeric tier), so it stays unknown.
+    r = {"email": None, "plan": None, "until": None, "tok": {}, "state": "ok"}
+    try:
+        entry = grok_sign_in(home)
+    except FileNotFoundError:
+        r["state"] = "none"
+        return r
+    except (OSError, ValueError):
+        r["state"] = "bad"
+        return r
+    if not entry:
+        r["state"] = "none"
+        return r
+    r["email"] = entry.get("email")
+    r["tok"] = {"access_token": entry.get("key") or ""}
+    return r
+
+
+GROK_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+
+
+def _iso_seconds(s):
+    """'2026-10-25T16:08:13.679519+00:00' (or ...Z) -> epoch seconds, None for anything else (also on 3.8)."""
+    m = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:?\d\d)?$", s if isinstance(s, str) else "")
+    if not m:
+        return None
+    import calendar
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2) or "Z"
+    if tz != "Z":
+        t -= (1 if tz[0] == "+" else -1) * (int(tz[1:3]) * 3600 + int(tz[-2:]) * 60)
+    return t
+
+
+def grok_windows(config):
+    """Grok's billing config -> the {"rate_limit": ...} shape of Codex's answer.
+
+    The current usage period (weekly) becomes one window. Its used share is creditUsagePercent when
+    the server sends it; it can be absent (seen on a signed-in account), and then it stays unknown
+    (None) instead of being read as 0.
+    """
+    period = config.get("currentPeriod") or {}
+    start, end = _iso_seconds(period.get("start")), _iso_seconds(period.get("end"))
+    if start is None or end is None or end <= start:
+        return {"rate_limit": {}}
+    used = config.get("creditUsagePercent")
+    used = max(0, min(100, int(round(float(used))))) if isinstance(used, (int, float)) and not isinstance(used, bool) else None
+    return {"rate_limit": {"primary_window": {"limit_window_seconds": int(end - start), "used_percent": used,
+                                              "reset_after_seconds": max(0, int(end - time.time()))}}}
+
+
+def fetch_grok_usage(tok):
+    """Credit use in the current period, from the endpoint grok's own /usage reads (not a public API)."""
+    if not tok.get("access_token"):
+        return None, "-"
+    # grok refreshes its short-lived bearer only while it runs; never refresh it here (that would
+    # rotate the refresh token under grok's feet).
+    if token_expired(tok):
+        return None, "token expired (run grok once to refresh)"
+    req = urllib.request.Request(
+        GROK_BILLING_URL,
+        headers={"Authorization": "Bearer " + tok["access_token"], "X-XAI-Token-Auth": "xai-grok-cli",
+                 "User-Agent": "zorua"})
+    try:
+        data = json.load(urllib.request.urlopen(req, timeout=15))
+    except urllib.error.HTTPError as e:
+        return None, ("token expired (run grok once to refresh)" if e.code in (401, 403) else "HTTP %d" % e.code)
+    except ValueError:
+        return None, "unexpected answer from grok's billing endpoint"
+    except Exception as e:
+        r = getattr(e, "reason", e)
+        return None, "network error: %s (check proxy)" % (str(r) or type(r).__name__)
+    config = data.get("config") if isinstance(data, dict) else None
+    return grok_windows(config if isinstance(config, dict) else {}), None
+
+
 def read_claude_info(home):
     st = claude_status(home)
     r = {"email": None, "plan": None, "until": None, "tok": {}, "state": "ok"}
@@ -543,6 +659,7 @@ def collect_usage(all_acc, online):
     accts = [(n, h) for n, h, _ in all_acc]
     kind = {n: k for n, _, k in all_acc}
     info = {n: read_codex_info(h) for n, h in accts if kind[n] == "codex"}
+    info.update({n: read_grok_info(h) for n, h in accts if kind[n] == "grok"})
     with ThreadPoolExecutor(max_workers=8) as ex:
         cfuts = {n: ex.submit(read_claude_info, h) for n, h in accts if kind[n] == "claude"}
         info.update({n: f.result() for n, f in cfuts.items()})
@@ -557,8 +674,10 @@ def collect_usage(all_acc, online):
             cache = {}
         pools = {}
         for n, h in accts:
-            if kind[n] == "codex" and info[n]["state"] == "ok":
+            if kind[n] in ("codex", "grok") and info[n]["state"] == "ok":
                 identity = str(info[n]["email"] or info[n]["tok"].get("account_id") or h).casefold()
+                if kind[n] == "grok":         # its own pool even for an email that also has Codex
+                    identity = "grok:" + identity
                 pool = hashlib.sha256(identity.encode()).hexdigest()
                 pools.setdefault(pool, []).append(n)
         now = time.time()
@@ -576,7 +695,8 @@ def collect_usage(all_acc, online):
                 else:
                     # Prefer a non-expired credential when several homes share a pool.
                     n = next((n for n in names if not token_expired(info[n]["tok"])), names[0])
-                    pending[pool] = ex.submit(fetch_codex_usage, info[n]["tok"])
+                    fetch = fetch_grok_usage if kind[n] == "grok" else fetch_codex_usage
+                    pending[pool] = ex.submit(fetch, info[n]["tok"])
             for pool, future in pending.items():
                 results[pool] = future.result()
                 cache[pool] = {"at": now, "result": results[pool]}
@@ -615,8 +735,8 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
     accts = [(n, h) for n, h, _ in all_acc]
     kind = {n: k for n, _, k in all_acc}
     has_claude = any(k == "claude" for k in kind.values())
-    cur = {"codex": current_account("codex"), "claude": current_account("claude")}
-    auto = {"codex": os.environ.get("ZORUA_AUTO_ACTIVE", ""), "claude": os.environ.get("ZORUA_AUTO_CLAUDE", "")}
+    cur = {k: current_account(k) for k in ("codex", "claude", "grok")}
+    auto = {k: os.environ.get(AUTO_VARS[k][0], "") for k in ("codex", "claude", "grok")}
 
     def is_cur(n):
         return cur[kind[n]] == n
@@ -711,9 +831,9 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
     def name_cell(n):
         return (("● " if is_cur(n) else "◆ " if is_auto(n) else "  ") + n, None)
 
-    groups = [(k, [(n, h) for n, h in accts if kind[n] == k]) for k in ("codex", "claude")]
+    groups = [(k, [(n, h) for n, h in accts if kind[n] == k]) for k in ("codex", "claude", "grok")]
     groups = [(k, g) for k, g in groups if g]
-    titled = len(groups) > 1          # headings only when both agents are present
+    titled = len(groups) > 1          # headings only when more than one agent is present
 
     def heading(k):
         if titled:
@@ -739,6 +859,9 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
                 if e:
                     print("   " + paint("31", e))
                 for lab, p, rs, _ in ws:
+                    if p is None:
+                        print("   %-3s %s   %s" % (lab.lower(), paint("2", "used share not reported"), paint("2", "resets in " + left(rs))))
+                        continue
                     print("   %-3s %s %3d%%   %s" % (lab.lower(), bar(p, 20), p, paint("2", "resets in " + left(rs))))
                 c = (d or {}).get("credits") or {}
                 if c.get("has_credits") and c.get("balance"):
@@ -763,7 +886,7 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
                 w5 = next((w for w in ws if w[3] < 86400), None)
                 w7 = next((w for w in ws if w[3] >= 86400), None)
                 for w in (w5, w7):
-                    row.append(("%s %3d%%" % (plain_bar(w[1], 6), w[1]), pct_code(w[1])) if w else ("–", "2"))
+                    row.append(("%s %3d%%" % (plain_bar(w[1], 6), w[1]), pct_code(w[1])) if w and w[1] is not None else ("–", "2"))
                 row.append((left(w7[2]) if w7 else left(w5[2]) if w5 else "–", None))
                 rows.append(row + tail)
             table(rows, head(*(["  NAME", "PLAN", "5H", "7D", "RESET"] + (["EXPIRES"] if has_exp else []))))
@@ -812,6 +935,10 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
                 notes.append("%s: no Claude usage yet — relay is installed; restart claude under this account and send a message" % n)
             else:
                 notes.append("%s: no Claude usage yet — run 'zorua hook install %s', then use claude once" % (n, n))
+    if online:
+        for n, _ in accts:
+            if kind[n] == "grok" and any(w[1] is None for w in windows(n)[2]):
+                notes.append("%s: Grok reported when its usage period resets but not how much of it is used" % n)
     if stale[0] and show_exp:
         notes.append("⚠ expired or within 7 days (date comes from the cached sign-in token, may be stale)")
     if not online:
@@ -1227,7 +1354,7 @@ def doctor_account(name, home, kind):
     if exists:
         add("permissions", "ok" if _doctor_permissions(home) else "fail", "directory ownership and permissions",
             "Check ownership, then chmod 700 %s" % quoted)
-    for filename in (("auth.json",) if kind == "codex" else (".credentials.json", "settings.json")):
+    for filename in (("auth.json",) if kind in ("codex", "grok") else (".credentials.json", "settings.json")):
         path = os.path.join(home, filename)
         if os.path.isfile(path):
             add("permissions:" + filename, "ok" if _doctor_permissions(path, True) else "fail", "private credential/settings file",
@@ -1246,6 +1373,28 @@ def doctor_account(name, home, kind):
             settings = {}
             add("settings", "fail", "cannot parse/read settings.json", "Repair this account's settings.json")
         integration_text = json.dumps(settings.get("hooks", {}))
+    elif kind == "grok":
+        try:
+            # Local check. The bearer lasts hours and grok renews it while it runs, so an expired one is no fault.
+            signed_in = bool(grok_sign_in(home))
+            add("login", "ok" if signed_in else "fail", "credentials present (local check)" if signed_in else "not signed in",
+                "zorua login " + name)
+        except FileNotFoundError:
+            add("login", "fail", "not signed in", "zorua login " + name)
+        except (OSError, ValueError):
+            add("login", "fail", "cannot parse/read auth.json", "zorua login " + name)
+        # Global grok hooks are the JSON files in $GROK_HOME/hooks; herdr registers its own there.
+        integration_text = ""
+        try:
+            hook_files = sorted(f for f in os.listdir(os.path.join(home, "hooks")) if f.endswith(".json"))
+        except OSError:
+            hook_files = []
+        for fn in hook_files:
+            try:
+                with open(os.path.join(home, "hooks", fn)) as f:
+                    integration_text += f.read()
+            except OSError:
+                pass
     else:
         try:
             auth = _doctor_json(os.path.join(home, "auth.json"))
@@ -1278,7 +1427,7 @@ def doctor_account(name, home, kind):
             integration_text = ""
             add("hooks", "fail", "cannot parse account hook/config files", "Repair hooks.json/config.toml, then review /hooks")
     if shutil.which("herdr"):
-        env = dict(os.environ, CODEX_HOME=home, CLAUDE_CONFIG_DIR=home)
+        env = dict(os.environ, CODEX_HOME=home, CLAUDE_CONFIG_DIR=home, GROK_HOME=home)
         try:
             r = subprocess.run(["herdr", "integration", "status"], env=env, capture_output=True, text=True, timeout=10)
             line = next((line for line in r.stdout.splitlines() if line.startswith(kind + ":")), "")
@@ -1344,6 +1493,10 @@ def claude_override_warning(home):
     present = [v for v in CLAUDE_OVERRIDES if os.environ.get(v)]
     if os.environ.get("ANTHROPIC_BASE_URL"):
         present.append("ANTHROPIC_BASE_URL")
+    override_warning(present)
+
+
+def override_warning(present):
     if present:
         err("zorua: warning: %s %s set in this shell and may override or redirect the account's own login "
             "(unset them, or use the one-shot form 'zorua <name> ...', which cleans them)"
@@ -1365,7 +1518,7 @@ def cmd_use(args, st):
     if not name or name == "-":
         for k in KINDS:
             st.set_home(k, "")
-        print("codex account: default (%s/.codex); claude account and providers: cleared" % HOME)
+        print("codex account: default (%s/.codex); claude and grok accounts and providers: cleared" % HOME)
         st.prompt()
         return 0
     kind = kind_of(name)
@@ -1394,6 +1547,9 @@ def cmd_use(args, st):
         return 1
     if kind == "codex":
         st.set_home("codex", "" if name == "default" else home)
+    elif kind == "grok":
+        st.set_home("grok", home)
+        override_warning([v for v in GROK_OVERRIDES if os.environ.get(v)])
     else:
         st.set_home("claude", home)
         claude_override_warning(home)
@@ -1450,7 +1606,7 @@ def cmd_off(st, args=()):
         for k in PROVIDER_AGENT:
             st.set_home(k, "")
         st.prompt()
-        print("cleared the providers; accounts (CODEX_HOME, CLAUDE_CONFIG_DIR) kept")
+        print("cleared the providers; accounts (CODEX_HOME, CLAUDE_CONFIG_DIR, GROK_HOME) kept")
         return 0
     if args:
         err("usage: zorua off [providers]")
@@ -1458,7 +1614,7 @@ def cmd_off(st, args=()):
     for k in KINDS:
         st.set_home(k, "")
     st.prompt()
-    print("cleared CODEX_HOME, CLAUDE_CONFIG_DIR and the providers; back to defaults")
+    print("cleared CODEX_HOME, CLAUDE_CONFIG_DIR, GROK_HOME and the providers; back to defaults")
     return 0
 
 
@@ -1467,6 +1623,14 @@ def run_claude_login(home):
         return subprocess.call(["claude", "auth", "login", "--claudeai"], env=claude_clean_env(home))
     except FileNotFoundError:
         err("zorua: claude not found on PATH — install Claude Code first")
+        return 127
+
+
+def run_grok_login(home, device=False):
+    try:
+        return subprocess.call(["grok", "login"] + (["--device-auth"] if device else []), env=grok_env(home))
+    except FileNotFoundError:
+        err("zorua: grok not found on PATH — install the Grok CLI first")
         return 127
 
 
@@ -1480,6 +1644,8 @@ def cmd_login(args):
         err("zorua: '%s' is a provider (API key); it has no login" % args[0])
         return 1
     home = registry(kind)[args[0]]
+    if kind == "grok":
+        return run_grok_login(home)
     return run_claude_login(home) if kind == "claude" else run_codex_login(home)
 
 
@@ -1495,7 +1661,7 @@ def seed_claude_settings(home):
 
 
 def cmd_add(args):
-    name, home_override, do_login, device, claude = "", "", True, False, False
+    name, home_override, do_login, device, claude, grok = "", "", True, False, False, False
     i = 0
     while i < len(args):
         a = args[i]
@@ -1512,6 +1678,8 @@ def cmd_add(args):
             device = True
         elif a == "--claude":
             claude = True
+        elif a == "--grok":
+            grok = True
         elif a.startswith("-"):
             err("zorua add: unknown flag %s" % a)
             return 1
@@ -1522,10 +1690,13 @@ def cmd_add(args):
             return 1
         i += 1
     if not name:
-        err("usage: zorua add <name> [--claude] [--home DIR] [--no-login] [--device-auth]")
+        err("usage: zorua add <name> [--claude | --grok] [--home DIR] [--no-login] [--device-auth]")
+        return 1
+    if claude and grok:
+        err("zorua add: --claude and --grok are different agents; pick one")
         return 1
     if claude and device:
-        err("zorua add: --device-auth is Codex-only (Claude Code signs in through the browser)")
+        err("zorua add: --device-auth is for Codex and Grok (Claude Code signs in through the browser)")
         return 1
     if not valid_name(name):
         err("zorua: name must match [A-Za-z0-9_-] and not collide with a command: %s" % name)
@@ -1537,7 +1708,7 @@ def cmd_add(args):
     if home_override:
         home = os.path.abspath(os.path.expanduser(home_override))
     else:
-        home = os.path.join(HOME, (".claude-%s" if claude else ".codex-%s") % name)
+        home = os.path.join(HOME, (".claude-%s" if claude else ".grok-%s" if grok else ".codex-%s") % name)
     for n, p, k in all_accounts():
         if p == home:
             err("zorua: directory already registered as account '%s': %s" % (n, home))
@@ -1554,12 +1725,15 @@ def cmd_add(args):
         write_tsv(CLAUDE_FILE, claude_accounts() + [(name, home)])
     else:
         if do_login and not os.path.isfile(os.path.join(home, "auth.json")):
-            print("Complete the sign-in in your browser (account: %s)..." % name)
-            if run_codex_login(home, device) != 0:
+            print("Complete the sign-in in your browser (%saccount: %s)..." % ("Grok " if grok else "", name))
+            if (run_grok_login if grok else run_codex_login)(home, device) != 0:
                 err("zorua: login failed; account not registered (directory kept: %s)" % home)
                 return 1
-        write_tsv(ACCOUNT_FILE, accounts() + [(name, home)])
-    print("added %saccount: %s -> %s" % ("claude " if claude else "", name, home))
+        if grok:
+            write_tsv(GROK_FILE, grok_accounts() + [(name, home)])
+        else:
+            write_tsv(ACCOUNT_FILE, accounts() + [(name, home)])
+    print("added %saccount: %s -> %s" % ("claude " if claude else "grok " if grok else "", name, home))
     signed_in = (claude_status(home).get("loggedIn") if claude
                  else os.path.isfile(os.path.join(home, "auth.json")))
     if not signed_in:
@@ -1587,13 +1761,15 @@ def cmd_rm(args):
     if home == os.environ.get(VARS[kind], ""):
         err("zorua: '%s' is active in this shell; run 'zorua use -' first" % name)
         return 1
-    reg_file = CLAUDE_FILE if kind == "claude" else ACCOUNT_FILE
+    reg_file = REGISTRY_FILES[kind]
     write_tsv(reg_file, [(n, p) for n, p in read_tsv(reg_file) if n != name])
     if os.path.exists(BINDING_FILE):
         write_tsv(BINDING_FILE, [(n, p) for n, p in read_tsv(BINDING_FILE) if n != name])
     remove_tags(name)
     print("removed account from registry: %s" % name)
-    if not purge and os.path.isdir(home) and sys.stdin.isatty():
+    if kind == "grok" and os.path.realpath(home) == os.path.realpath(os.path.join(HOME, ".grok")):
+        purge = False                   # Grok's default home also holds the grok program itself
+    elif not purge and os.path.isdir(home) and sys.stdin.isatty():
         purge = confirm("Also delete data directory %s ? This cannot be undone" % home, "n")
     if purge:
         import shutil
@@ -2177,7 +2353,7 @@ def cmd_binds():
     print(" account       project directory (* active here)")
     for n, p in rows:
         active = n in here and (pwd == p or pwd.startswith(p.rstrip("/") + "/"))
-        tag = {"claude": "  (claude)", "claude_provider": "  (claude provider)",
+        tag = {"claude": "  (claude)", "grok": "  (grok)", "claude_provider": "  (claude provider)",
                "codex_provider": "  (codex provider)"}.get(kind_of(n), "")
         print(" %s%-12s %s%s" % ("* " if active else "  ", n, p, tag))
     return 0
@@ -2434,11 +2610,12 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua pick --kind codex|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]
                                 recommend by remaining 7d then 5h quota; shared emails use one pool
   zorua doctor [name ...] [--json]  read-only login, permissions, proxy, hooks and provider checks
-  zorua use <name>              switch this shell to <name> (sets CODEX_HOME or CLAUDE_CONFIG_DIR)
+  zorua use <name>              switch this shell to <name> (sets CODEX_HOME, CLAUDE_CONFIG_DIR or
+                                GROK_HOME)
   zorua use -                   switch this shell back to default
-  zorua <name> [args]           one-shot: run codex (or claude, for a Claude account) under that
-                                account, e.g.  zorua work exec "..."
-  zorua login <name>            run codex login (or claude auth login) for one account
+  zorua <name> [args]           one-shot: run codex (or claude / grok, for a Claude / Grok account)
+                                under that account, e.g.  zorua work exec "..."
+  zorua login <name>            run codex login (or claude auth login / grok login) for one account
   zorua off                     clear the switch
   zorua off providers           clear only the providers, keep the accounts
   zorua add <name>              create a Codex account (new CODEX_HOME + sign-in)
@@ -2446,6 +2623,9 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua add --claude <name>     create a Claude Code subscription account (own
                                 CLAUDE_CONFIG_DIR ~/.claude-<name>; sign-in via claude auth login)
                                 new accounts start from <config dir>/claude-settings.json if present
+  zorua add --grok <name>       create a Grok CLI account (own GROK_HOME ~/.grok-<name>; sign-in via
+                                grok login) [--home DIR] [--no-login] [--device-auth]
+                                the existing sign-in:  zorua add --grok main --home ~/.grok --no-login
   zorua rm <name> [--purge]     unregister (keeps data unless confirmed/--purge)
   zorua provider add <name> --base-url URL [--key K | --key-env VAR] [--api-key]
                                 [--model ROLE=ID]... [--env VAR=VALUE]...
@@ -2484,7 +2664,7 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
 
 
 def cmd_help():
-    print("Zorua — parallel multi-account manager for Codex CLI and Claude Code (command: zorua)")
+    print("Zorua — parallel multi-account manager for Codex CLI, Claude Code and Grok CLI (command: zorua)")
     print(HELP)
     print("  accounts: %s" % " ".join(homes()))
     print("  files:    %s" % ACCOUNT_FILE)
@@ -2633,6 +2813,8 @@ def main(argv):
             _flush_before_exec()
             if kind == "claude":
                 env, argv = claude_clean_env(home), ["claude"] + rest
+            elif kind == "grok":
+                env, argv = grok_env(home), ["grok"] + rest
             else:
                 env, argv = dict(os.environ, CODEX_HOME=home), ["codex"] + rest
             try:

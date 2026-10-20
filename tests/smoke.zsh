@@ -18,7 +18,7 @@ export ZDOTDIR="$HOME"
 export XDG_CONFIG_HOME="$TMP/config"
 mkdir -p "$HOME"
 export ZORUA_CONFIG_DIR="$XDG_CONFIG_HOME/zorua"
-unset ZORUA_TEST_KEYCHAIN
+unset ZORUA_TEST_KEYCHAIN GROK_HOME ZORUA_AUTO_GROK GROK_AUTH GROK_AUTH_PATH
 mkdir -p "$TMP/safety-bin"
 cp "$ROOT/tests/fake-security" "$TMP/safety-bin/security"
 chmod +x "$TMP/safety-bin/security"
@@ -221,6 +221,35 @@ PATH="$TMP/cbin:$PATH" zorua add --claude plain >/dev/null
 [[ ! -e $HOME/.claude-plain/settings.json ]] || die "no template: no settings.json must be created"
 zorua rm seeded --purge >/dev/null; zorua rm kept --purge >/dev/null; zorua rm plain --purge >/dev/null
 ok "add --claude seeds settings.json from claude-settings.json template"
+
+# ---- 11b. grok account through the zsh wrapper (fake grok; its token is expired, so no network) ----
+
+mkdir -p "$TMP/gbin"
+cp "$ROOT/tests/fake-grok" "$TMP/gbin/grok"
+PATH="$TMP/gbin:$PATH" zorua add --grok gx >/dev/null
+[[ -f $HOME/.grok-gx/auth.json ]] || die "add --grok must sign in through grok login under GROK_HOME"
+out=$(zorua ls)
+contains "$out" "gro***r@example.com" "grok account listed with a masked email"
+contains "$out" " Grok" "grok accounts get their own section"
+contains "$(zorua usage)" "token expired (run grok once to refresh)" "usage asks for grok instead of calling out"
+zorua use gx >/dev/null 2>&1
+[[ $GROK_HOME == $HOME/.grok-gx ]] || die "zorua use gx did not set GROK_HOME"
+print -rn -- "$RPROMPT" | grep -q "grok:gx" || die "grok marker missing: $RPROMPT"
+out=$(GROK_AUTH_PATH=/elsewhere PATH="$TMP/gbin:$PATH" zorua gx -p hi)
+contains "$out" "FAKE_GROK_HOME=$HOME/.grok-gx" "one-shot sets GROK_HOME"
+contains "$out" "GROK_AUTH_PATH=unset" "one-shot drops GROK_AUTH_PATH"
+contains "$out" "ARGS=-p hi" "one-shot forwards arguments"
+zorua use - >/dev/null
+[[ -z ${GROK_HOME:-} ]] || die "zorua use - did not clear GROK_HOME"
+mkdir -p "$TMP/gproj"; cd "$TMP/gproj"
+zorua bind gx >/dev/null
+[[ $GROK_HOME == $HOME/.grok-gx && $ZORUA_AUTO_GROK == gx ]] || die "grok bind did not apply"
+: > "$XDG_CONFIG_HOME/zorua/bindings.tsv"      # no bindings left: only ZORUA_AUTO_GROK makes the hook run
+cd "$HOME"; _zorua_apply_binding
+[[ -z ${GROK_HOME:-} && -z $ZORUA_AUTO_GROK ]] || die "the cd hook must restore GROK_HOME after an auto switch"
+zorua rm gx --purge >/dev/null
+[[ ! -d $HOME/.grok-gx ]] || die "rm --purge must delete the grok home"
+ok "grok accounts work through the zsh wrapper"
 
 # ---- 12. providers ---------------------------------------------------------------
 
