@@ -40,7 +40,9 @@ printf '{"tokens":{"id_token":"%s"}}' "$(mkjwt work@example.com)" > "$HOME/.code
 source "$ROOT/zorua.bash"
 
 out=$(zorua ls)
-contains "$out" "work@example.com" "discovers signed-in home"
+contains "$out" "w***k@example.com" "discovers signed-in home"
+not_contains "$out" "work@example.com" "emails masked by default"
+contains "$(zorua ls --full)" "work@example.com" "ls --full shows the whole email"
 contains "$out" "pro" "plan column"
 not_contains "$out" "2030-01-02" "expiry hidden by default"
 contains "$(zorua ls --expiry)" "2030-01-02" "expiry column on request"
@@ -113,7 +115,7 @@ export PATH="$TMP/cbin:$PATH"
 zorua add --claude alt >/dev/null
 [ -f "$XDG_CONFIG_HOME/zorua/claude-accounts.tsv" ] || die "claude registry not written"
 out=$(zorua ls)
-contains "$out" "claude@example.com" "claude account email from claude auth status"
+contains "$out" "cl***e@example.com" "claude account email from claude auth status"
 contains "$out" "max" "claude plan"
 contains "$out" "Claude Code" "claude accounts get their own section"
 contains "$out" "Codex" "codex accounts get their own section"
@@ -188,7 +190,7 @@ ok "claude + codex bindings coexist"
 
 zorua rm alt --purge >/dev/null
 [ ! -d "$ALT" ] || die "purge must delete claude home"
-not_contains "$(zorua ls)" "claude@example.com" "rm unregisters claude account"
+not_contains "$(zorua ls --full)" "claude@example.com" "rm unregisters claude account"
 export PATH=$OLDPATH
 ok "rm claude account"
 
@@ -341,6 +343,8 @@ mkdir -p "$HOME/.codex-adopt"
 printf '{"tokens":{"id_token":"%s"}}' "$(mkjwt adopt@example.com)" > "$HOME/.codex-adopt/auth.json"
 out=$(printf 'y\nn\nn\nn\n' | PATH="$TMP/bin:$PATH" zorua setup 2>&1)
 contains "$out" "Zorua setup" "setup banner"
+contains "$out" "ad***t@example.com" "setup masks the found email"
+not_contains "$out" "adopt@example.com" "setup hides the whole email"
 contains "$(cat "$XDG_CONFIG_HOME/zorua/accounts.tsv")" "adopt" "setup registers"
 zorua setup </dev/null >/dev/null 2>&1 || die "setup must survive EOF"
 ok "setup wizard"

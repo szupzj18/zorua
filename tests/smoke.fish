@@ -43,7 +43,9 @@ printf '{"tokens":{"id_token":"%s"}}' $jwt > $HOME/.codex-work/auth.json
 source $root/zorua.fish
 
 set -l out (zorua ls | string collect)
-contains_str $out work@example.com "discovers signed-in home"
+contains_str $out "w***k@example.com" "discovers signed-in home"
+string match -q "*work@example.com*" -- $out; and die "email should be masked by default"
+contains_str (zorua ls --full | string collect) work@example.com "ls --full shows the whole email"
 string match -q "*2030-01-02*" -- $out; and die "expiry should be hidden by default"
 contains_str (zorua ls --expiry | string collect) 2030-01-02 "expiry column on request"
 ok "first run + ls"
@@ -99,7 +101,7 @@ cp $root/tests/fake-claude $tmp/cbin/claude
 set -l oldpath $PATH
 set -gx PATH $tmp/cbin $PATH
 zorua add --claude alt >/dev/null; or die "add --claude failed"
-contains_str (zorua ls | string collect) claude@example.com "claude account listed"
+contains_str (zorua ls | string collect) "cl***e@example.com" "claude account listed"
 zorua use alt >/dev/null 2>&1
 test "$CLAUDE_CONFIG_DIR" = "$HOME/.claude-alt"; or die "use alt did not set CLAUDE_CONFIG_DIR ($CLAUDE_CONFIG_DIR)"
 test "$ZORUA_PROMPT_TEXT" = "[claude:alt]"; or die "prompt text: $ZORUA_PROMPT_TEXT"

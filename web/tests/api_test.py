@@ -56,7 +56,7 @@ time.sleep(4)
 j = get("/api/login?name=c1")["job"]; check("login job finished", j["status"] == "done", j)
 st = get("/api/state?refresh=1")["data"]
 acc = {a["name"]: a for a in st["accounts"]}
-check("state lists new accounts", "w1" in acc and acc["c1"]["state"] == "ok" and acc["c1"]["email"] == "fake@example.com", acc.get("c1"))
+check("state lists new accounts", "w1" in acc and acc["c1"]["state"] == "ok" and acc["c1"]["email"] == "f***e@example.com", acc.get("c1"))
 s, r = post({"action":"account.login","name":"w1"}); check("codex login job starts", s == 200 and r["job"]["status"] == "running", r)
 time.sleep(3); j = get("/api/login?name=w1")["job"]; check("codex login failed cleanly", j["status"] == "failed", j)
 check("login unknown account 400", post({"action":"account.login","name":"zzz"})[0] == 400)
