@@ -232,6 +232,11 @@ out=$(zorua ls)
 contains "$out" "gro***r@example.com" "grok account listed with a masked email"
 contains "$out" " Grok" "grok accounts get their own section"
 contains "$(zorua usage)" "token expired (run grok once to refresh)" "usage asks for grok instead of calling out"
+contains "$(zorua usage -r)" "7D LEFT" "usage -r labels the remaining columns"
+zorua usage mode remaining >/dev/null
+contains "$(zorua usage mode)" "remaining" "usage mode prints the saved default"
+contains "$(zorua usage)" "7D LEFT" "saved default applies"
+zorua usage mode used >/dev/null
 zorua use gx >/dev/null 2>&1
 [[ $GROK_HOME == $HOME/.grok-gx ]] || die "zorua use gx did not set GROK_HOME"
 print -rn -- "$RPROMPT" | grep -q "grok:gx" || die "grok marker missing: $RPROMPT"

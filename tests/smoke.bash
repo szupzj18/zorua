@@ -215,6 +215,13 @@ assert a["work"]["agent"] == "codex" and set(a["gx"]) == set(a["work"]), a
 ' || die "ls --json lists grok accounts with the same fields"
 not_contains "$(zorua ls --json)" "fake-refresh-token" "ls --json must not print grok tokens"
 contains "$(zorua usage)" "token expired (run grok once to refresh)" "usage asks for grok instead of calling out"
+contains "$(zorua usage -r)" "7D LEFT" "usage -r labels the remaining columns"
+not_contains "$(zorua usage)" "LEFT" "used stays the default"
+zorua usage mode remaining >/dev/null
+contains "$(zorua usage mode)" "remaining" "usage mode prints the saved default"
+contains "$(zorua usage)" "7D LEFT" "saved default applies"
+not_contains "$(zorua usage --used)" "LEFT" "--used overrides the saved default"
+zorua usage mode used >/dev/null
 warn=$(GROK_AUTH_PATH=/elsewhere zorua use gx 2>&1 >/dev/null) || true
 contains "$warn" "GROK_AUTH_PATH" "override warning"
 zorua use gx >/dev/null 2>&1

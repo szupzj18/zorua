@@ -40,6 +40,8 @@ CLAUDE_SETTINGS_TEMPLATE = os.path.join(CONFIG_DIR, "claude-settings.json")
 BINDING_FILE = os.path.join(CONFIG_DIR, "bindings.tsv")
 CLAUDE_FILE = os.path.join(CONFIG_DIR, "claude-accounts.tsv")
 GROK_FILE = os.path.join(CONFIG_DIR, "grok-accounts.tsv")
+PREFS_FILE = os.path.join(CONFIG_DIR, "prefs.json")       # display preferences only; never keys or tokens
+USAGE_MODES = ("used", "remaining")
 SHELL = os.environ.get("ZORUA_SHELL", "zsh")
 RESERVED = {"doctor", "tag", "pick", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
             "unset", "help", "add", "rm", "bind", "unbind", "binds", "version",
@@ -425,6 +427,13 @@ def apply_binding(st, pwd):
 TITLES = {"codex": "Codex", "claude": "Claude Code", "grok": "Grok"}
 
 
+def remaining_of(used):
+    """Share still available for a used share; None stays None (never reported is not 100% left)."""
+    if used is None:
+        return None
+    return max(0, min(100, 100 - used))
+
+
 def emit_json(all_acc, info, live, claude_age, claude_expired=None, hide=lambda s: s):
     """Machine-readable ls / usage for other front ends. Never includes tokens or provider keys;
     `hide` masks the emails."""
@@ -446,6 +455,7 @@ def emit_json(all_acc, info, live, claude_age, claude_expired=None, hide=lambda 
                 if isinstance(w, dict):
                     u["windows"].append({"window_seconds": w.get("limit_window_seconds"),
                                          "used_percent": w.get("used_percent"),
+                                         "remaining_percent": remaining_of(w.get("used_percent")),
                                          "reset_after_seconds": w.get("reset_after_seconds")})
         accounts.append({"name": n, "agent": k, "home": h, "state": i["state"],
                          "email": hide(i["email"]), "plan": i["plan"], "until": i["until"], "usage": u})
@@ -726,7 +736,7 @@ def collect_usage(all_acc, online):
     return info, live, claude_age, claude_expired
 
 
-def render(online, verbose, expiry=False, as_json=False, full=False):
+def render(online, verbose, expiry=False, as_json=False, full=False, remaining=False):
     # The subscription end date is read from the cached sign-in token, which can be stale, so it
     # is only shown on request: --expiry, or ZORUA_EXPIRY=1.
     show_exp = expiry or os.environ.get("ZORUA_EXPIRY") == "1"
@@ -769,12 +779,20 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
     def pct_code(p):
         return "31" if p >= 80 else "33" if p >= 50 else "32"
 
+    def shown(p):
+        return remaining_of(p) if remaining else p
+
+    def fill(p, n):
+        s = shown(p)
+        return math.ceil(s / 100 * n) if s > 0 else 0
+
+    # The colour always follows the used share, so a nearly empty quota is red in both modes.
     def bar(p, n):
-        f = math.ceil(p / 100 * n) if p > 0 else 0
+        f = fill(p, n)
         return paint(pct_code(p), "▓" * f) + paint("2", "░" * (n - f))
 
     def plain_bar(p, n):
-        f = math.ceil(p / 100 * n) if p > 0 else 0
+        f = fill(p, n)
         return "▓" * f + "░" * (n - f)
 
     PLAN = {"pro": "36", "promax": "35", "max": "35", "team": "34", "enterprise": "34", "plus": "32"}
@@ -862,7 +880,8 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
                     if p is None:
                         print("   %-3s %s   %s" % (lab.lower(), paint("2", "used share not reported"), paint("2", "resets in " + left(rs))))
                         continue
-                    print("   %-3s %s %3d%%   %s" % (lab.lower(), bar(p, 20), p, paint("2", "resets in " + left(rs))))
+                    print("   %-3s %s %3d%%%s   %s" % (lab.lower(), bar(p, 20), shown(p), " left" if remaining else "",
+                                                       paint("2", "resets in " + left(rs))))
                 c = (d or {}).get("credits") or {}
                 if c.get("has_credits") and c.get("balance"):
                     print("   " + paint("2", "credits %s" % format(int(float(c["balance"])), ",")))
@@ -886,10 +905,11 @@ def render(online, verbose, expiry=False, as_json=False, full=False):
                 w5 = next((w for w in ws if w[3] < 86400), None)
                 w7 = next((w for w in ws if w[3] >= 86400), None)
                 for w in (w5, w7):
-                    row.append(("%s %3d%%" % (plain_bar(w[1], 6), w[1]), pct_code(w[1])) if w and w[1] is not None else ("–", "2"))
+                    row.append(("%s %3d%%" % (plain_bar(w[1], 6), shown(w[1])), pct_code(w[1])) if w and w[1] is not None else ("–", "2"))
                 row.append((left(w7[2]) if w7 else left(w5[2]) if w5 else "–", None))
                 rows.append(row + tail)
-            table(rows, head(*(["  NAME", "PLAN", "5H", "7D", "RESET"] + (["EXPIRES"] if has_exp else []))))
+            cols = ["  NAME", "PLAN", "5H LEFT", "7D LEFT", "RESET"] if remaining else ["  NAME", "PLAN", "5H", "7D", "RESET"]
+            table(rows, head(*(cols + (["EXPIRES"] if has_exp else []))))
         else:
             rows = []
             for n, h in group:
@@ -1003,8 +1023,38 @@ def account_email(home):
 # Commands
 # --------------------------------------------------------------------------
 
+def load_prefs():
+    try:
+        with open(PREFS_FILE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def usage_mode():
+    """The saved default for zorua usage: 'used' unless 'zorua usage mode remaining' was run."""
+    m = load_prefs().get("usage_mode")
+    return m if m in USAGE_MODES else "used"
+
+
+def cmd_usage_mode(args):
+    if not args:
+        print(usage_mode())
+        return 0
+    if len(args) > 1 or args[0] not in USAGE_MODES:
+        err("usage: zorua usage mode [used|remaining]   (no argument: print the default)")
+        return 1
+    prefs = load_prefs()
+    prefs["usage_mode"] = args[0]
+    _write_pick_json(PREFS_FILE, prefs)
+    print("zorua usage now shows %s by default (--used / --remaining override it once)" % args[0])
+    return 0
+
+
 def cmd_ls(args, usage=False):
     online, verbose, expiry, as_json, full = usage, False, False, False, False
+    mode = None
     for a in args:
         if a in ("-u", "--usage"):
             online = True
@@ -1016,10 +1066,14 @@ def cmd_ls(args, usage=False):
             as_json = True
         elif a == "--full":
             full = True
+        elif a in ("-r", "--remaining"):
+            mode = "remaining"
+        elif a == "--used":
+            mode = "used"
         else:
-            err("zorua ls: unknown option %s (use -v, --expiry, --json, --full)" % a)
+            err("zorua ls: unknown option %s (use -v, --expiry, --json, --full, -r/--remaining, --used)" % a)
             return 1
-    render(online, verbose, expiry, as_json, full)
+    render(online, verbose, expiry, as_json, full, (mode or usage_mode()) == "remaining")
     return 0
 
 
@@ -2603,7 +2657,9 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
                                 emails are masked (jon***h@gmail.com); --full (or ZORUA_FULL_EMAIL=1)
                                 shows them whole, also for usage, pick and --json
   zorua setup                   interactive first-run wizard (adopt homes, sign in, add, bind)
-  zorua usage [-v]              live limits (5h/7d bars); -v = detailed blocks (also: zorua ls -v)
+  zorua usage [-v] [-r|--used]  live limits (5h/7d bars); -v = detailed blocks (also: zorua ls -v)
+                                -r/--remaining shows what is left (5H LEFT / 7D LEFT), --used the used share
+  zorua usage mode [used|remaining]  save the default for zorua usage; no argument prints it
                                 add --expiry (or ZORUA_EXPIRY=1) to show Codex subscription end dates;
                                 hidden by default because they come from a cached token and can be stale
   zorua tag <name> [+tag ...] [-tag ...]  view/edit account or provider labels
@@ -2747,6 +2803,8 @@ def main(argv):
     rc = 0
     if sub in ("ls", "list", "status"):
         rc = cmd_ls(rest)
+    elif sub == "usage" and rest[:1] == ["mode"]:
+        rc = cmd_usage_mode(rest[1:])
     elif sub == "usage":
         rc = cmd_ls(rest, usage=True)
     elif sub == "tag":

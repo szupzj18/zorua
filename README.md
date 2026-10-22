@@ -92,6 +92,8 @@ zorua add --grok main --home ~/.grok --no-login     # register the sign-in you a
 
 zorua                                # list accounts: masked email, plan
 zorua usage                          # + 5h / 7d usage bars
+zorua usage --remaining              # ...showing what is left (5H LEFT / 7D LEFT); -r for short
+zorua usage mode remaining           # make that the default (--used switches back for one run)
 zorua use work                       # this shell now runs Codex as "work"
 zorua use alt                        # ...and Claude Code as "alt" (both can be active)
 zorua use -                          # back to the defaults
@@ -360,6 +362,8 @@ are blanked, so a relay's model names do not leak into another provider.
 |---|---|
 | `zorua` / `zorua ls` | List accounts: masked email and plan (`-v`: home directory; `--expiry`: Codex subscription end date; `--full`: whole emails, see [Privacy](#privacy)) |
 | `zorua usage` | The same with live 5h / 7d usage bars |
+| `zorua usage -r` / `--remaining`, `--used` | Show the share left (`5H LEFT` / `7D LEFT`, bars full when much is left) instead of the share used; `--json` always has both `used_percent` and `remaining_percent` |
+| `zorua usage mode [used\|remaining]` | Save the default for `zorua usage` in `prefs.json` (flags win; no argument prints it; default `used`) |
 | `zorua usage -v` / `zorua ls -v` | Detailed blocks per account (home, bars, credits) |
 | `zorua tag <name> [+tag …] [-tag …]` | View or edit account/provider labels in `tags.json` |
 | `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json] [--full]` | Recommend an eligible account or provider, explain the choice and list alternatives |
@@ -426,6 +430,7 @@ serves every shell.
 ~/.config/zorua/grok-accounts.tsv      Grok CLI accounts    <name>\t<GROK_HOME>
 ~/.config/zorua/claude-settings.json   optional template copied to a new Claude account's settings.json (e.g. proxy env); never overwrites
 ~/.config/zorua/tags.json              explicit labels by account/provider name
+~/.config/zorua/prefs.json             display preferences (`usage_mode`: used or remaining)
 ~/.config/zorua/usage-cache.json       shared 30-second Codex and Grok usage cache (0600; no tokens)
 ~/.config/zorua/bindings.tsv           directory bindings   <name>\t<path>
 ~/.config/zorua/providers.json         Claude Code and Codex providers with Keychain references on macOS (file fallback mode 0600); run/<name>.settings.json is generated

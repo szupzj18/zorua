@@ -87,7 +87,10 @@ _zorua() {
     case $words[2] in
       use|login|bind|tag|doctor) _wanted accounts expl 'account or provider' compadd -- $names ;;
       rm) _wanted accounts expl 'codex account' compadd -- ${names:#default} ;;
+      usage) _wanted opts expl 'usage option' compadd -- -v -r --remaining --used --expiry --json --full mode ;;
     esac
+  elif (( CURRENT == 4 )) && [[ $words[2] == usage && $words[3] == mode ]]; then
+    _wanted modes expl 'usage mode' compadd -- used remaining
   fi
 }
 (( $+functions[compdef] )) && compdef _zorua zorua
