@@ -44,11 +44,16 @@ jobs:
 
   shells:
     name: smoke (bash + fish, python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.8", "3.12"]
+        include:
+          # ubuntu-latest is Ubuntu 26.04, which has no setup-python build of 3.8.
+          - python: "3.8"
+            os: ubuntu-24.04
+          - python: "3.12"
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
