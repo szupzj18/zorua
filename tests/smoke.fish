@@ -123,6 +123,10 @@ zorua add --grok gx >/dev/null; or die "add --grok failed"
 test -f $HOME/.grok-gx/auth.json; or die "add --grok must sign in through grok login"
 contains_str (zorua ls | string collect) "gro***r@example.com" "grok account listed"
 contains_str (zorua usage | string collect) "token expired (run grok once to refresh)" "usage asks for grok instead of calling out"
+contains_str (zorua usage -r | string collect) "7D LEFT" "usage -r labels the remaining columns"
+zorua usage mode remaining >/dev/null
+contains_str (zorua usage mode | string collect) "remaining" "usage mode prints the saved default"
+zorua usage mode used >/dev/null
 zorua use gx >/dev/null 2>&1
 test "$GROK_HOME" = "$HOME/.grok-gx"; or die "use gx did not set GROK_HOME ($GROK_HOME)"
 test "$ZORUA_PROMPT_TEXT" = "[grok:gx]"; or die "prompt text: $ZORUA_PROMPT_TEXT"

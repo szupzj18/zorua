@@ -82,6 +82,12 @@ _zorua_complete() {
   else
     case ${COMP_WORDS[1]} in
       use|login|bind|rm|tag|doctor) COMPREPLY=($(compgen -W "$names" -- "$cur")) ;;
+      usage)
+        if [ "$COMP_CWORD" -eq 3 ] && [ "${COMP_WORDS[2]}" = mode ]; then
+          COMPREPLY=($(compgen -W "used remaining" -- "$cur"))
+        else
+          COMPREPLY=($(compgen -W "-v -r --remaining --used --expiry --json --full mode" -- "$cur"))
+        fi ;;
     esac
   fi
 }
