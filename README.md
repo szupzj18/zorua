@@ -149,6 +149,18 @@ Good to know when using Grok accounts:
 - `~/.grok` also holds the `grok` program itself, so `zorua rm` never deletes it, even with
   `--purge`, when it is registered as an account.
 
+### Antigravity CLI (`agy`): shown, not switched
+
+`agy` has one global sign-in per OS user: it keeps it in the system keychain and
+`~/.gemini/antigravity-cli/`, shares it with the Antigravity app and IDE extensions, and has
+no variable that moves its home. So it is not an account kind: there is no `zorua add`, `use`,
+`login`, `bind` or `rm` for it. Once `~/.gemini/antigravity-cli/` exists, `zorua` and
+`zorua usage` add one `agy` row that says whether it is signed in (`(current sign-in)` or
+`(not signed in)`), judged only by whether `antigravity-oauth-token` exists; Zorua never
+opens that file. PLAN and usage are `–`: agy has no usage interface Zorua can read (its own
+`/usage` screen is the place to look). `--json` leaves it out. Sign in and out inside `agy`
+itself.
+
 ## Usage windows
 
 `zorua usage` queries Codex accounts live (each with its own token, against the same
@@ -365,6 +377,7 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua usage -r` / `--remaining`, `--used` | Show the share left (`5H LEFT` / `7D LEFT`, bars full when much is left) instead of the share used; `--json` always has both `used_percent` and `remaining_percent` |
 | `zorua usage mode [used\|remaining]` | Save the default for `zorua usage` in `prefs.json` (flags win; no argument prints it; default `used`) |
 | `zorua usage -v` / `zorua ls -v` | Detailed blocks per account (home, bars, credits) |
+| (agy) | `zorua` / `zorua usage` show one `agy` row for its single global sign-in (PLAN and usage `–`); it is only shown, never switched |
 | `zorua tag <name> [+tag …] [-tag …]` | View or edit account/provider labels in `tags.json` |
 | `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json] [--full]` | Recommend an eligible account or provider, explain the choice and list alternatives |
 | `zorua doctor [name …] [--json]` | Read-only login, directory/file permissions, Claude proxy, Codex hook trust and provider connectivity checks, with repair hints |

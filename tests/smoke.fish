@@ -144,6 +144,11 @@ test -d $HOME/.grok-gx; and die "rm --purge must delete the grok home"
 set -gx PATH $gpath
 ok "grok accounts"
 
+mkdir -p $HOME/.gemini/antigravity-cli; and touch $HOME/.gemini/antigravity-cli/antigravity-oauth-token
+contains_str (zorua ls | string collect) "agy   (current sign-in)  –" "agy row shows the current sign-in"
+contains_str (zorua usage | string collect) "agy   –     –   –   –" "agy usage is all –"
+ok "agy sign-in"
+
 # ---- providers ----------------------------------------------------------------
 mkdir -p $HOME/.claude
 echo '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:1","ANTHROPIC_AUTH_TOKEN":"PROXY_MANAGED","ANTHROPIC_DEFAULT_SONNET_MODEL":"internal","CLAUDE_CODE_MAX_OUTPUT_TOKENS":"64000"},"permissions":{"deny":["Bash(rm:*)"]}}' > $HOME/.claude/settings.json

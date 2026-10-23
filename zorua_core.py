@@ -185,6 +185,19 @@ def grok_accounts():
 
 REGISTRY_FILES = {"codex": ACCOUNT_FILE, "claude": CLAUDE_FILE, "grok": GROK_FILE}
 
+# Antigravity CLI (agy) keeps one sign-in per OS user (the system keychain plus
+# ~/.gemini/antigravity-cli) and has no home variable, so it is not an account kind:
+# ls / usage show whether it is signed in, and zorua never switches it.
+AGY_DIR = os.path.join(HOME, ".gemini", "antigravity-cli")
+
+
+def agy_state():
+    """-> None when agy was never set up here, else "ok" (signed in) or "none".
+    Only checks that the sign-in file exists; it is never opened."""
+    if not os.path.isdir(AGY_DIR):
+        return None
+    return "ok" if os.path.exists(os.path.join(AGY_DIR, "antigravity-oauth-token")) else "none"
+
 
 def registry(kind):
     if is_provider(kind):
@@ -424,7 +437,7 @@ def apply_binding(st, pwd):
 # Rendering (account table / usage)
 # --------------------------------------------------------------------------
 
-TITLES = {"codex": "Codex", "claude": "Claude Code", "grok": "Grok"}
+TITLES = {"codex": "Codex", "claude": "Claude Code", "grok": "Grok", "agy": "Antigravity"}
 
 
 def remaining_of(used):
@@ -851,7 +864,8 @@ def render(online, verbose, expiry=False, as_json=False, full=False, remaining=F
 
     groups = [(k, [(n, h) for n, h in accts if kind[n] == k]) for k in ("codex", "claude", "grok")]
     groups = [(k, g) for k, g in groups if g]
-    titled = len(groups) > 1          # headings only when more than one agent is present
+    agy = agy_state()
+    titled = len(groups) + bool(agy) > 1          # headings only when more than one agent is present
 
     def heading(k):
         if titled:
@@ -919,6 +933,27 @@ def render(online, verbose, expiry=False, as_json=False, full=False, remaining=F
                 rows.append(row + ([(exp, ecode)] if has_exp else []))
             table(rows, head(*(["  NAME", "ACCOUNT", "PLAN"] + (["EXPIRES"] if has_exp else []))))
 
+    # agy: one row for its single global sign-in; no plan or usage can be read, so both are "–".
+    if agy:
+        if groups:
+            print()
+        heading("agy")
+        agy_who = "(current sign-in)" if agy == "ok" else "(not signed in)"
+        if verbose:
+            sep = paint("2", " " + "─" * 58)
+            print(sep)
+            print("   %s  %s  %s" % (paint("1", "%-10s" % "agy"), agy_who, paint("2", "–")))
+            print("   " + paint("2", short(AGY_DIR)))
+            if online:
+                print("   " + paint("2", "usage not available (agy has no readable usage interface)"))
+            print(sep)
+        elif online:
+            row = [("  agy", None), ("–", "2")]
+            table([row + ([("–", "2")] * 3 if agy == "ok" else [(agy_who, "31")])],
+                  head(*(["  NAME", "PLAN", "5H LEFT", "7D LEFT", "RESET"] if remaining else ["  NAME", "PLAN", "5H", "7D", "RESET"])))
+        else:
+            table([[("  agy", None), (agy_who, None), ("–", "2")]], head("  NAME", "ACCOUNT", "PLAN"))
+
     provs = zp.load(CONFIG_DIR)
     pcur = {a: os.environ.get(VARS[k], "") for k, a in PROVIDER_AGENT.items()}
     pauto = {a: os.environ.get(AUTO_VARS[k][0], "") for k, a in PROVIDER_AGENT.items()}
@@ -926,7 +961,7 @@ def render(online, verbose, expiry=False, as_json=False, full=False, remaining=F
         mine = {n: p for n, p in provs.items() if zp.agent(p) == agent}
         if not mine:
             continue
-        if groups or agent == "codex" and any(zp.agent(p) == "claude" for p in provs.values()):
+        if groups or agy or agent == "codex" and any(zp.agent(p) == "claude" for p in provs.values()):
             print()
         print(" " + paint("1", "Providers (%s)" % TITLES[agent]))
         prows = []
@@ -959,6 +994,8 @@ def render(online, verbose, expiry=False, as_json=False, full=False, remaining=F
         for n, _ in accts:
             if kind[n] == "grok" and any(w[1] is None for w in windows(n)[2]):
                 notes.append("%s: Grok reported when its usage period resets but not how much of it is used" % n)
+    if agy:
+        notes.append("agy: one global sign-in; zorua shows it but does not switch it")
     if stale[0] and show_exp:
         notes.append("⚠ expired or within 7 days (date comes from the cached sign-in token, may be stale)")
     if not online:
@@ -2662,6 +2699,9 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua usage mode [used|remaining]  save the default for zorua usage; no argument prints it
                                 add --expiry (or ZORUA_EXPIRY=1) to show Codex subscription end dates;
                                 hidden by default because they come from a cached token and can be stale
+  agy (Antigravity CLI)         has one global sign-in (no home variable): zorua ls / usage show
+                                whether it is signed in, with PLAN and usage as –; zorua only shows
+                                it and never switches it (no add / use / login / bind / rm)
   zorua tag <name> [+tag ...] [-tag ...]  view/edit account or provider labels
   zorua pick --kind codex|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]
                                 recommend by remaining 7d then 5h quota; shared emails use one pool
