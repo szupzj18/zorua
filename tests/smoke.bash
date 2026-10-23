@@ -245,6 +245,11 @@ zorua rm gx --purge >/dev/null
 [ ! -d "$HOME/.grok-gx" ] || die "purge must delete the grok home"
 ok "grok accounts: add, ls, use, one-shot, bind, rm"
 
+mkdir -p "$HOME/.gemini/antigravity-cli"; : > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+contains "$(zorua ls)" "agy   (current sign-in)  –" "agy row shows the current sign-in"
+contains "$(zorua usage)" "agy   –     –   –   –" "agy usage is all –"
+ok "agy sign-in is listed without being switched"
+
 
 # ---- Claude usage via the status-line relay --------------------------------
 

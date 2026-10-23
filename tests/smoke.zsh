@@ -256,6 +256,16 @@ zorua rm gx --purge >/dev/null
 [[ ! -d $HOME/.grok-gx ]] || die "rm --purge must delete the grok home"
 ok "grok accounts work through the zsh wrapper"
 
+# ---- 11c. agy: one global sign-in, shown only (the token file is never read) ----
+
+[[ $(zorua ls) != *Antigravity* ]] || die "no agy section before agy was set up"
+mkdir -p "$HOME/.gemini/antigravity-cli"; : > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+out=$(zorua ls)
+contains "$out" "agy   (current sign-in)  –" "agy row shows the current sign-in"
+contains "$out" "zorua shows it but does not switch it" "agy note says it is not switched"
+contains "$(zorua usage)" "agy   –     –   –   –" "agy usage is all –"
+ok "agy sign-in is listed without being switched"
+
 # ---- 12. providers ---------------------------------------------------------------
 
 mkdir -p "$HOME/.claude"
