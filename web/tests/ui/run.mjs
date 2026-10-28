@@ -248,11 +248,38 @@ try {
     await p.close();
   }
 
+  // The palette ranks fuzzy matches best first and marks the letters that matched.
+  {
+    const p = await open();
+    await p.goto(BASE + "/#/", { waitUntil: "networkidle0" });
+    await until(has(p, /Overview/));
+    await p.keyboard.press("/");
+    await sleep(250);
+    const rows = () => p.evaluate(() => [...document.querySelectorAll('dialog[data-palette] [role="option"]')].map((o) => ({ text: o.querySelector("span")?.textContent, marks: [...o.querySelectorAll("mark")].map((m) => m.textContent).join("") })));
+    ok("with nothing typed, no letters are marked", (await rows()).every((r) => r.marks === ""));
+    await p.keyboard.type("acc");
+    await sleep(200);
+    let r = await rows();
+    ok("the palette lists the best match first and marks the matched letters", r[0]?.text === "Add account" && r[0].marks === "acc", JSON.stringify(r[0]));
+    for (let i = 0; i < 3; i++) await p.keyboard.press("Backspace");
+    await p.keyboard.type("usw");
+    await sleep(200);
+    r = await rows();
+    ok("the palette finds a command from scattered letters", r.length === 1 && r[0].text === "zorua use work" && r[0].marks === "usw", JSON.stringify(r));
+    await p.keyboard.press("ArrowDown");
+    await p.keyboard.press("ArrowUp");
+    await p.keyboard.press("Enter");
+    ok("Enter still runs the highlighted command", await until(has(p, /Copied: zorua use work/), 3000));
+    await p.close();
+  }
+
   // Accessibility: axe-core over the main states, in both themes and at phone width.
   for (const [name, scheme, size, hash, setup] of [
     ["overview, dark", "dark", [1280, 900], "#/", null],
     ["overview, light", "light", [1280, 900], "#/", null],
     ["command palette", "dark", [1280, 900], "#/", (p) => p.keyboard.press("/")],
+    ["command palette, matched letters marked, dark", "dark", [1280, 900], "#/", async (p) => (await p.keyboard.press("/"), await sleep(250), await p.keyboard.type("acc"))],
+    ["command palette, matched letters marked, light", "light", [1280, 900], "#/", async (p) => (await p.keyboard.press("/"), await sleep(250), await p.keyboard.type("acc"))],
     ["add-account dialog", "dark", [1280, 900], "#/", (p) => p.keyboard.press("a")],
     ["shortcuts dialog", "dark", [1280, 900], "#/", (p) => p.keyboard.press("?")],
     ["account page, light", "light", [1280, 900], "#/account/work", null],

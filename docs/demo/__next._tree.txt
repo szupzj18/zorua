@@ -1,3 +1,3 @@
-:HL["/zorua/demo/_next/static/chunks/23xubuartnel_.css","style"]
+:HL["/zorua/demo/_next/static/chunks/03q60k5h7c52l.css","style"]
 1:[["children",{"s":"__PAGE__","h":160}]]
-0:{"b":"8Uc6I_E8awDM0FcDKOJwH","t":{"t":{"s":"","h":80,"c":"$Q1"}}}
+0:{"b":"fG52eId660CjXQqKdpkkm","t":{"t":{"s":"","h":80,"c":"$Q1"}}}
