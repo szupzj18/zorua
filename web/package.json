@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 4747",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "sh tests/run.sh",
+    "test": "npm run test:unit && sh tests/run.sh",
+    "test:unit": "node --test tests/fuzzy.test.mjs",
     "test:ui": "node tests/ui/run.mjs"
   },
   "dependencies": {

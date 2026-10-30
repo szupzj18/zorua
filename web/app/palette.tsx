@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { rank, runs } from "./fuzzy";
 import { Icon, type IconName } from "./icons";
 
 export type Command = {
@@ -33,18 +34,26 @@ function remember(id: string) {
   } catch {}
 }
 
-/** Every word typed must appear in the label, hint or keywords; a label that starts with the query ranks first. */
-function search(commands: Command[], q: string): Command[] {
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return commands;
-  const scored: [number, Command][] = [];
-  for (const c of commands) {
-    const label = c.label.toLowerCase();
-    const hay = `${label} ${c.hint ?? ""} ${c.keywords ?? ""} ${c.group}`.toLowerCase();
-    if (!words.every((w) => hay.includes(w))) continue;
-    scored.push([label.startsWith(words[0]) ? 0 : label.includes(words[0]) ? 1 : 2, c]);
-  }
-  return scored.sort((a, b) => a[0] - b[0]).map(([, c]) => c);
+/** A command and the label / hint positions the typed words hit, for highlighting. */
+type Hit = { c: Command; label: number[]; hint: number[] };
+
+/** Every word typed must match (as a fuzzy subsequence) the label, hint, keywords or group; best match first. */
+function search(commands: Command[], q: string): Hit[] {
+  return rank(commands, q, (c) => c).map((r) => ({ c: r.item, label: r.label, hint: r.hint }));
+}
+
+/** The matched characters get an accent tint and underline and a heavier weight. The text colour stays the body colour: accent text on an accent tint is too faint in the light theme. */
+function Marked({ text, at }: { text: string; at: number[] }) {
+  if (at.length === 0) return text;
+  return runs(text, at).map((r, i) =>
+    r.hit ? (
+      <mark key={i} className="rounded-[3px] bg-accent/20 font-semibold text-fg underline decoration-accent decoration-2 underline-offset-2">
+        {r.text}
+      </mark>
+    ) : (
+      r.text
+    ),
+  );
 }
 
 /** ⌘K: jump to an account or provider, run an action, copy a command. Mounted only while open. */
@@ -55,14 +64,14 @@ export function Palette({ commands, initial = "", onClose }: { commands: Command
   const [active, setActive] = useState(0);
   const uid = useId();
   const [recent] = useState(readRecent);
-  const shown = useMemo(() => {
+  const shown = useMemo((): Hit[] => {
     if (q.trim()) return search(commands, q);
     // With nothing typed, the last few commands you ran come first.
     const again = recent.flatMap((id) => commands.filter((c) => c.id === id)).map((c) => ({ ...c, id: `recent:${c.id}`, group: "Recent" }));
-    return [...again, ...commands];
+    return [...again, ...commands].map((c) => ({ c, label: [], hint: [] }));
   }, [commands, q, recent]);
   const current = Math.min(active, Math.max(0, shown.length - 1));
-  const count = shown.filter((c) => c.group !== "Recent").length; // a recent command is also listed in its own group
+  const count = shown.filter((h) => h.c.group !== "Recent").length; // a recent command is also listed in its own group
 
   useEffect(() => {
     const d = ref.current;
@@ -89,7 +98,7 @@ export function Palette({ commands, initial = "", onClose }: { commands: Command
       setActive((current - 1 + shown.length) % Math.max(1, shown.length));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      run(shown[current]);
+      run(shown[current]?.c);
     }
   };
 
@@ -127,7 +136,7 @@ export function Palette({ commands, initial = "", onClose }: { commands: Command
       </div>
       <div ref={list} id={`${uid}-list`} role="listbox" className="max-h-[min(24rem,52vh)] overflow-y-auto p-2">
         {shown.length === 0 && <p className="px-3 py-8 text-center text-xs text-dim">Nothing matches “{q}”.</p>}
-        {shown.map((c, i) => {
+        {shown.map(({ c, label, hint }, i) => {
           const header = !q && c.group !== lastGroup;
           lastGroup = c.group;
           return (
@@ -143,8 +152,8 @@ export function Palette({ commands, initial = "", onClose }: { commands: Command
                 className={`flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-[13px] ${i === current ? "bg-accent/10 text-accent" : ""}`}
               >
                 {c.icon && <Icon name={c.icon} className={i === current ? "" : "text-dim"} />}
-                <span className="min-w-0 flex-1 truncate">{c.label}</span>
-                {c.hint && <span className="truncate text-xs text-dim">{c.hint}</span>}
+                <span className="min-w-0 flex-1 truncate"><Marked text={c.label} at={label} /></span>
+                {c.hint && <span className="truncate text-xs text-dim"><Marked text={c.hint} at={hint} /></span>}
                 {c.shortcut && <kbd className="rounded border border-line-strong px-1.5 py-px font-mono text-xs text-dim">{c.shortcut}</kbd>}
                 {i === current && <Icon name="enter" className="size-3.5" />}
               </div>
