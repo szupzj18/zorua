@@ -43,7 +43,7 @@ GROK_FILE = os.path.join(CONFIG_DIR, "grok-accounts.tsv")
 PREFS_FILE = os.path.join(CONFIG_DIR, "prefs.json")       # display preferences only; never keys or tokens
 USAGE_MODES = ("used", "remaining")
 SHELL = os.environ.get("ZORUA_SHELL", "zsh")
-RESERVED = {"doctor", "tag", "pick", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
+RESERVED = {"doctor", "tag", "pick", "tui", "provider", "launch", "model", "ls", "list", "status", "usage", "setup", "use", "login", "off", "reset",
             "unset", "help", "add", "rm", "bind", "unbind", "binds", "version",
             "prompt", "apply", "names", "hook", "-h", "--help", "-v", "--version"}
 
@@ -676,16 +676,32 @@ def token_expired(tokens):
     return False
 
 
-def collect_usage(all_acc, online):
+def left(s):
+    """Time until a reset, as in the RESET column: 3d4h, 2h10m, 7m."""
+    s = int(s)
+    d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
+    return "%dd%dh" % (d, h) if d and h else "%dd" % d if d else "%dh%dm" % (h, m) if h else "%dm" % m
+
+
+def label(s):
+    """A usage window's name from its length in seconds: 5H, 7D."""
+    s = int(s)
+    return "%dH" % (s // 3600) if s < 86400 else "%dD" % (s // 86400)
+
+
+def collect_usage(all_acc, online, info=None):
+    """-> (info, live, claude_age, claude_expired). Pass the info of an earlier call to reuse
+    it instead of reading every account's sign-in again (`claude auth status` is slow)."""
     claude_age = {}
     claude_expired = {}
     accts = [(n, h) for n, h, _ in all_acc]
     kind = {n: k for n, _, k in all_acc}
-    info = {n: read_codex_info(h) for n, h in accts if kind[n] == "codex"}
-    info.update({n: read_grok_info(h) for n, h in accts if kind[n] == "grok"})
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        cfuts = {n: ex.submit(read_claude_info, h) for n, h in accts if kind[n] == "claude"}
-        info.update({n: f.result() for n, f in cfuts.items()})
+    if info is None:
+        info = {n: read_codex_info(h) for n, h in accts if kind[n] == "codex"}
+        info.update({n: read_grok_info(h) for n, h in accts if kind[n] == "grok"})
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            cfuts = {n: ex.submit(read_claude_info, h) for n, h in accts if kind[n] == "claude"}
+            info.update({n: f.result() for n, f in cfuts.items()})
     live = {}
     if online:
         # One request per email quota pool, shared with pick and usage for 30 seconds.
@@ -779,15 +795,6 @@ def render(online, verbose, expiry=False, as_json=False, full=False, remaining=F
 
     def ago(secs):
         return "%dm" % (secs // 60) if secs < 3600 else "%dh%dm" % (secs // 3600, secs % 3600 // 60) if secs < 86400 else "%dd" % (secs // 86400)
-
-    def left(s):
-        s = int(s)
-        d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
-        return "%dd%dh" % (d, h) if d and h else "%dd" % d if d else "%dh%dm" % (h, m) if h else "%dm" % m
-
-    def label(s):
-        s = int(s)
-        return "%dH" % (s // 3600) if s < 86400 else "%dD" % (s // 86400)
 
     def pct_code(p):
         return "31" if p >= 80 else "33" if p >= 50 else "32"
@@ -1707,6 +1714,50 @@ def cmd_off(st, args=()):
     st.prompt()
     print("cleared CODEX_HOME, CLAUDE_CONFIG_DIR, GROK_HOME and the providers; back to defaults")
     return 0
+
+
+def cmd_tui(args, st):
+    """zorua tui [--full]: full-screen picker (zorua_tui.py). Switching goes through cmd_use /
+    cmd_off after the terminal is restored, so the calling shell gets the same statements."""
+    full = False
+    for a in args:
+        if a == "--full":
+            full = True
+        else:
+            err("usage: zorua tui [--full]")
+            return 1
+    try:
+        import zorua_tui as zt
+    except ImportError as e:
+        err("zorua tui: %s (reinstall Zorua; zorua ls / zorua use <name> still work)" % e)
+        return 1
+    if not zt.available(sys.stdin, sys.stdout):
+        err(zt.NOT_TTY)
+        return 1
+    try:
+        action, loader = zt.run(sys.modules[__name__], full)
+    except zt.curses.error as e:
+        if "setupterm" in str(e) or "could not find terminal" in str(e):
+            # A TTY whose TERM has no terminfo here, e.g. xterm-ghostty over ssh or under sudo.
+            err(zt.UNKNOWN_TERM % os.environ.get("TERM", ""))
+        else:
+            err("%s (%s)" % (zt.NOT_TTY, e))
+        return 1
+    rc = 0
+    if action == "off":
+        rc = cmd_off(st)
+    elif isinstance(action, tuple) and action[0] == "use":
+        rc = cmd_use([action[1]], st)
+    elif action == "interrupt":
+        rc = 130
+    if loader.busy():
+        # A usage fetch (network or `claude auth status`) is still running; its worker threads
+        # would hold up interpreter exit for up to their timeout. Hand the shell its statements now.
+        EMIT.flush()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(rc)
+    return rc
 
 
 def run_claude_login(home):
@@ -2706,6 +2757,8 @@ HELP = """  zorua                         list accounts, emails, plan and subscr
   zorua pick --kind codex|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json]
                                 recommend by remaining 7d then 5h quota; shared emails use one pool
   zorua doctor [name ...] [--json]  read-only login, permissions, proxy, hooks and provider checks
+  zorua tui [--full]            full-screen list of accounts and providers with usage; Enter switches
+                                this shell to the highlighted one, o = off, r = refresh, q = quit
   zorua use <name>              switch this shell to <name> (sets CODEX_HOME, CLAUDE_CONFIG_DIR or
                                 GROK_HOME)
   zorua use -                   switch this shell back to default
@@ -2853,6 +2906,8 @@ def main(argv):
         rc = cmd_pick(rest)
     elif sub == "use":
         rc = cmd_use(rest, st)
+    elif sub == "tui":
+        rc = cmd_tui(rest, st)
     elif sub in ("off", "reset", "unset"):
         rc = cmd_off(st, rest)
     elif sub == "login":

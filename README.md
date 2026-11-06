@@ -204,6 +204,34 @@ does not, the column shows `–` and a note says so, rather than 0%. Grok renews
 token only while it runs, so after a few idle hours the row says `token expired (run grok once
 to refresh)`; Zorua never renews the token itself. Grok accounts have no 5-hour window.
 
+## Interactive picker
+
+```shell
+zorua tui            # --full shows whole email addresses
+```
+
+A full-screen list of every account (grouped by agent) and provider: state, masked email,
+plan, the 5h / weekly windows with their reset time (used or remaining share, following
+`zorua usage mode`), and for providers the endpoint and the model in use. `●` marks what this
+shell has active, `◆` an entry switched automatically by `zorua bind` (`*` and `+` outside a
+UTF-8 locale). The list appears at once from local data; live usage is fetched in the
+background and again on `r`.
+
+| Key | Action |
+|---|---|
+| ↑ ↓ / `j` `k`, `g` `G` | Move / first, last |
+| Enter | Switch this shell to the highlighted entry, exactly like `zorua use <name>`, then exit |
+| `o` | Clear the switch, like `zorua off`, then exit |
+| `r` | Fetch live usage again |
+| `q` / Esc | Quit without changing anything |
+| `?` | Show the key help |
+
+It needs a terminal: with stdin or stdout redirected it exits 1 and points at `zorua ls` /
+`zorua use`. It uses Python's built-in `curses` (no extra dependency).
+
+`tui` is now a reserved name. An account or provider you already called `tui` still switches
+with `zorua use tui`, but `zorua tui ...` now opens the picker instead of running it.
+
 ## Recommend an account
 
 ```shell
@@ -378,6 +406,7 @@ are blanked, so a relay's model names do not leak into another provider.
 | `zorua usage mode [used\|remaining]` | Save the default for `zorua usage` in `prefs.json` (flags win; no argument prints it; default `used`) |
 | `zorua usage -v` / `zorua ls -v` | Detailed blocks per account (home, bars, credits) |
 | (agy) | `zorua` / `zorua usage` show one `agy` row for its single global sign-in (PLAN and usage `–`); it is only shown, never switched |
+| `zorua tui [--full]` | Interactive full-screen picker: accounts and providers with usage; Enter switches this shell (same as `zorua use`), `o` = off, `r` = refresh, `q` = quit (see [Interactive picker](#interactive-picker)) |
 | `zorua tag <name> [+tag …] [-tag …]` | View or edit account/provider labels in `tags.json` |
 | `zorua pick --kind codex\|claude [--needs tags] [--avoid tags] [--model ID-or-prefix] [--json] [--full]` | Recommend an eligible account or provider, explain the choice and list alternatives |
 | `zorua doctor [name …] [--json]` | Read-only login, directory/file permissions, Claude proxy, Codex hook trust and provider connectivity checks, with repair hints |
@@ -437,7 +466,7 @@ serves every shell.
 ## Files and configuration
 
 ```text
-~/.zorua/                              the program: zorua_core.py, zorua_providers.py, zorua_statusline.py, zorua.{zsh,bash,fish}
+~/.zorua/                              the program: zorua_core.py, zorua_providers.py, zorua_statusline.py, zorua_tui.py, zorua.{zsh,bash,fish}
 ~/.config/zorua/accounts.tsv           Codex accounts       <name>\t<CODEX_HOME>
 ~/.config/zorua/claude-accounts.tsv    Claude Code accounts <name>\t<CLAUDE_CONFIG_DIR>
 ~/.config/zorua/grok-accounts.tsv      Grok CLI accounts    <name>\t<GROK_HOME>

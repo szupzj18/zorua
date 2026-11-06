@@ -553,6 +553,14 @@ contains "$out" "429 fail out of credit (HTTP 429)" "provider check: a quota 429
 contains "$out" "429 warn rate limited" "provider check: a plain 429 is a warning"
 ok "provider models: catalog, pick per shell, fetch, check"
 
+# ---- 8b. tui without a terminal ------------------------------------------------
+
+before=${CODEX_HOME:-}
+out=$(zorua tui </dev/null 2>&1) && die "zorua tui without a TTY must fail"
+contains "$out" "zorua use <name>" "tui without a TTY points at ls / use"
+[[ ${CODEX_HOME:-} == "$before" ]] || die "a failed tui must not switch the shell"
+ok "tui refuses to run without a terminal"
+
 # ---- 9. version --------------------------------------------------------------
 
 out=$(zorua version)

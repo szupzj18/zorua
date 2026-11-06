@@ -42,7 +42,7 @@ print -r -- "$inst" | grep -q "added source block"
 [[ -f $UH/.zshrc ]] || die ".zshrc not created"
 grep -q '# >>> zorua >>>' "$UH/.zshrc" || die "marker begin missing"
 grep -q '# <<< zorua <<<' "$UH/.zshrc" || die "marker end missing"
-for f in zorua_core.py zorua_statusline.py zorua.zsh zorua.bash zorua.fish; do
+for f in zorua_core.py zorua_providers.py zorua_statusline.py zorua_tui.py zorua.zsh zorua.bash zorua.fish; do
   [[ -f $UH/.zorua/$f ]] || die "$f not installed"
 done
 grep -q '# >>> zorua >>>' "$UH/.bashrc" || die "bashrc block missing"

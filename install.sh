@@ -19,7 +19,9 @@ REPO_OWNER="szupzj18"
 REPO_NAME="zorua"
 BRANCH="${ZORUA_REF:-main}"      # branch, tag (e.g. v0.7.1) or commit to install from
 INSTALL_DIR="${ZORUA_HOME:-${CX_HOME:-$HOME/.zorua}}"
-FILES="zorua_core.py zorua_providers.py zorua_statusline.py zorua.zsh zorua.bash zorua.fish"
+FILES="zorua_core.py zorua_providers.py zorua_statusline.py zorua_tui.py zorua.zsh zorua.bash zorua.fish"
+# Not in older releases (zorua_tui.py came after v0.7.1): a pinned ZORUA_REF installs without them.
+OPTIONAL_FILES="zorua_tui.py"
 MARK_BEGIN="# >>> zorua >>>"
 MARK_END="# <<< zorua <<<"
 # Zorua used to be called codex-switch; clean up what the old installer left behind.
@@ -50,6 +52,9 @@ else
     say "downloading $url"
     if ! curl -fsSL "$url" -o "$INSTALL_DIR/$f.part"; then
       rm -f "$INSTALL_DIR/$f.part"
+      case " $OPTIONAL_FILES " in
+        *" $f "*) say "skipped $f (not in $BRANCH; 'zorua tui' needs a newer release)"; continue ;;
+      esac
       say "download failed (private repo? clone it and run 'sh install.sh')" >&2
       exit 1
     fi
