@@ -215,7 +215,8 @@ plan, the 5h / weekly windows with their reset time (used or remaining share, fo
 `zorua usage mode`), and for providers the endpoint and the model in use. `●` marks what this
 shell has active, `◆` an entry switched automatically by `zorua bind` (`*` and `+` outside a
 UTF-8 locale). The list appears at once from local data; live usage is fetched in the
-background and again on `r`.
+background and again on `r`. Claude Code windows come from the status-line relay's cache, so
+their row says how old it is (`as of 2h1m ago`) and which window has reset since.
 
 | Key | Action |
 |---|---|
@@ -226,8 +227,8 @@ background and again on `r`.
 | `q` / Esc | Quit without changing anything |
 | `?` | Show the key help |
 
-It needs a terminal: with stdin or stdout redirected it exits 1 and points at `zorua ls` /
-`zorua use`. It uses Python's built-in `curses` (no extra dependency).
+It needs a terminal: with stdin or stdout redirected, or a `TERM` it cannot draw on (unknown
+here, or `dumb`), it exits 1 and points at `zorua ls` / `zorua use`. It uses Python's built-in `curses` (no extra dependency).
 
 `tui` is now a reserved name. An account or provider you already called `tui` still switches
 with `zorua use tui`, but `zorua tui ...` now opens the picker instead of running it.

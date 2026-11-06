@@ -15,6 +15,7 @@ as __main__ and a second import would get its own, unflushed, Emitter.
 """
 import locale
 import os
+import sys
 import threading
 import unicodedata
 
@@ -41,6 +42,8 @@ HELP_LINES = (
 STATE_TEXT = {"ok": "ok", "none": "signed out", "apikey": "api key", "bad": "error"}
 NOT_TTY = ("zorua tui: needs an interactive terminal (stdin and stdout must be a TTY) with curses; "
            "use 'zorua ls' or 'zorua usage' to list accounts and 'zorua use <name>' to switch")
+NO_CURSOR = ("zorua tui: terminal type '%s' cannot move the cursor, so a full-screen view cannot draw; "
+             "try TERM=xterm-256color zorua tui, or zorua ls / zorua use <name>")
 UNKNOWN_TERM = ("zorua tui: terminal type '%s' is unknown here (no terminfo); try "
                 "TERM=xterm-256color zorua tui, or zorua ls / zorua use <name>")
 
@@ -65,13 +68,15 @@ def _windows(core, data, remaining):
     return out
 
 
-def build_rows(core, all_acc, info, live, provs, env, remaining=False, full=False):
+def build_rows(core, all_acc, info, live, provs, remaining=False, full=False, ages=None, expired=None):
     """-> list of rows: {"heading": title} or an entry dict with "name" and "kind".
 
     all_acc / info / live are what core.all_accounts() / core.collect_usage() return; info is None
     while the first read is still running and live is None until online usage arrived.
-    provs is zp.load(); env is the calling shell's environment (os.environ) and decides which
-    entries are marked active, read from the same variables cmd_use sets."""
+    provs is zp.load(). Active entries come from core.current_account(), the rule ls uses.
+    ages / expired are collect_usage's claude_age / claude_expired: Claude windows are the relay's
+    cache from the last session, so their row says how old they are."""
+    env = os.environ
     zp = core.zp
     hide = core.email_masker([i.get("email") for i in (info or {}).values()], full)
     rows = []
@@ -80,14 +85,13 @@ def build_rows(core, all_acc, info, live, provs, env, remaining=False, full=Fals
         if not group:
             continue
         rows.append({"heading": core.TITLES[kind]})
-        cur = env.get(core.VARS[kind], "")
+        cur = core.current_account(kind)
         auto = env.get(core.AUTO_VARS[kind][0], "")
         for n, h in group:
             i = (info or {}).get(n)
             data, error = (live or {}).get(n, (None, None))
             row = {"name": n, "kind": kind, "home": h,
-                   # current_account(): an empty CODEX_HOME means the `default` account
-                   "active": cur == h or (kind == "codex" and not cur and n == "default"),
+                   "active": cur == n,
                    "auto": bool(auto) and auto == n,
                    "state": "…", "email": "", "plan": "", "windows": [], "usage": "…" if live is None else ""}
             if i is not None:
@@ -100,6 +104,12 @@ def build_rows(core, all_acc, info, live, provs, env, remaining=False, full=Fals
                 row["windows"] = _windows(core, data, remaining)
                 if error and error != "-":
                     row["usage"] = error
+                elif kind == "claude" and (ages or {}).get(n) is not None:
+                    note = ["as of %s ago" % core.ago(ages[n])]
+                    note += ["%s reset %s ago" % (core.label(g["window_seconds"]), core.ago(g["reset_ago_seconds"]))
+                             for g in (expired or {}).get(n, [])]
+                    row["usage"] = ", ".join(note)
+                    row["note"] = True
                 elif not row["windows"] and not row["usage"]:
                     row["usage"] = "–"
             rows.append(row)
@@ -109,7 +119,7 @@ def build_rows(core, all_acc, info, live, provs, env, remaining=False, full=Fals
         if not mine:
             continue
         rows.append({"heading": "Providers (%s)" % core.TITLES[agent]})
-        cur = env.get(core.VARS[kind], "")
+        cur = core.current_account(kind)
         auto = env.get(core.AUTO_VARS[kind][0], "")
         for n, p in mine:
             active = cur == n
@@ -183,6 +193,7 @@ class Loader:
         self.core, self.all_acc = core, all_acc
         self.lock = threading.Lock()
         self.info = self.live = None
+        self.ages, self.expired = {}, {}
         self.error = ""
         self.thread = None
 
@@ -205,16 +216,17 @@ class Loader:
                 first, _, _, _ = self.core.collect_usage(self.all_acc, False)
                 with self.lock:
                     self.info = first
-            info, live, _, _ = self.core.collect_usage(self.all_acc, True, info=first)
+            info, live, ages, expired = self.core.collect_usage(self.all_acc, True, info=first)
             with self.lock:
                 self.info, self.live, self.error = info, live, ""
+                self.ages, self.expired = ages, expired
         except Exception as e:          # shown in the status line; the list stays usable
             with self.lock:
                 self.error = "usage failed: %s" % e
 
     def snapshot(self):
         with self.lock:
-            return self.info, self.live, self.error
+            return self.info, self.live, self.error, self.ages, self.expired
 
 
 # --------------------------------------------------------------------------
@@ -261,7 +273,7 @@ def _cells(row, glyph):
             cells.append(("%s %3d%%%s %s" % (w["label"], w["shown"], " left" if glyph["remaining"] else "",
                                               w["reset"]), role))
     if row["usage"]:
-        cells.append((row["usage"], "bad" if row["usage"] not in ("…", "–") else "dim"))
+        cells.append((row["usage"], "dim" if row["usage"] in ("…", "–") or row.get("note") else "bad"))
     return cells
 
 
@@ -412,14 +424,14 @@ def _keys(scr, core, all_acc, provs, remaining, full):
         scr.timeout(150)                # poll the loader between key presses
         loader.start()
         glyph = _glyphs(remaining)
-        rows = build_rows(core, all_acc, None, None, provs, os.environ, remaining, full)
+        rows = build_rows(core, all_acc, None, None, provs, remaining, full)
         ui = initial_ui(rows)
         seen = None
         while True:
-            info, live, error = loader.snapshot()
+            info, live, error, ages, expired = loader.snapshot()
             if (id(info), id(live)) != seen:
                 seen = (id(info), id(live))
-                rows = build_rows(core, all_acc, info, live, provs, os.environ, remaining, full)
+                rows = build_rows(core, all_acc, info, live, provs, remaining, full, ages, expired)
             if loader.busy():
                 status = "reading sign-ins…" if info is None else "fetching live usage…"
             else:
@@ -454,6 +466,19 @@ def run(core, full=False):
     provs = core.zp.load(core.CONFIG_DIR)
     remaining = core.usage_mode() == "remaining"
     return curses.wrapper(_loop, core, all_acc, provs, remaining, full)
+
+
+def term_problem():
+    """-> an error message when TERM cannot draw a full screen (unknown, or no cursor addressing
+    like TERM=dumb), else None. Checked before curses takes over the terminal."""
+    term = os.environ.get("TERM", "")
+    try:
+        curses.setupterm(term or None, sys.stdout.fileno())
+    except curses.error:
+        return UNKNOWN_TERM % term
+    if not curses.tigetstr("cup"):
+        return NO_CURSOR % term
+    return None
 
 
 def available(stdin, stdout):
