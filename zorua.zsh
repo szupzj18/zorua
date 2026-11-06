@@ -81,12 +81,13 @@ _zorua() {
   names=(${(f)"$(ZORUA_SHELL=zsh python3 $ZORUA_CORE names 2>/dev/null)"})
   if (( CURRENT == 2 )); then
     _alternative \
-      'subcommands:zorua command:(ls usage pick tag doctor setup use login off add rm bind unbind binds hook provider prompt version help)' \
+      'subcommands:zorua command:(ls usage tui pick tag doctor setup use login off add rm bind unbind binds hook provider prompt version help)' \
       "accounts:codex account:($names)"
   elif (( CURRENT == 3 )); then
     case $words[2] in
       use|login|bind|tag|doctor) _wanted accounts expl 'account or provider' compadd -- $names ;;
       rm) _wanted accounts expl 'codex account' compadd -- ${names:#default} ;;
+      tui) _wanted opts expl 'tui option' compadd -- --full ;;
       usage) _wanted opts expl 'usage option' compadd -- -v -r --remaining --used --expiry --json --full mode ;;
     esac
   elif (( CURRENT == 4 )) && [[ $words[2] == usage && $words[3] == mode ]]; then

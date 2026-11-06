@@ -36,7 +36,7 @@ jobs:
         run: |
           name="zorua-$VERSION"
           mkdir -p "dist/$name"
-          cp zorua_core.py zorua_providers.py zorua_statusline.py zorua.zsh zorua.bash zorua.fish \
+          cp zorua_core.py zorua_providers.py zorua_statusline.py zorua_tui.py zorua.zsh zorua.bash zorua.fish \
              install.sh uninstall.sh LICENSE README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           cp install.sh dist/install.sh

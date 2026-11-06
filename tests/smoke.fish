@@ -246,5 +246,12 @@ zorua use - >/dev/null
 set -gx PATH $oldpath
 ok "provider models: catalog and pick per shell"
 
+set -l before "$CODEX_HOME"
+set -l tout (zorua tui </dev/null 2>&1 | string collect)
+zorua tui </dev/null >/dev/null 2>&1; and die "zorua tui without a TTY must fail"
+contains_str $tout "zorua use <name>" "tui without a TTY points at ls / use"
+test "$CODEX_HOME" = "$before"; or die "a failed tui must not switch the shell"
+ok "tui refuses to run without a terminal"
+
 rm -rf $tmp
 echo "All $n fish smoke checks passed."

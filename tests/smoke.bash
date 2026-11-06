@@ -628,4 +628,10 @@ fails zorua provider models bad fetch
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true
 ok "provider models: catalog, pick per shell, fetch"
 
+before=${CODEX_HOME:-}
+if out=$(zorua tui </dev/null 2>&1); then die "zorua tui without a TTY must fail"; fi
+contains "$out" "zorua use <name>" "tui without a TTY points at ls / use"
+[ "${CODEX_HOME:-}" = "$before" ] || die "a failed tui must not switch the shell"
+ok "tui refuses to run without a terminal"
+
 echo "All $n bash smoke checks passed."

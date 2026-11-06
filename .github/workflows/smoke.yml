@@ -25,7 +25,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python3 -c "import ast,sys; [ast.parse(open(f).read()) for f in ('zorua_core.py', 'zorua_providers.py', 'zorua_statusline.py')]"
+          python3 -c "import ast,sys; [ast.parse(open(f).read()) for f in ('zorua_core.py', 'zorua_providers.py', 'zorua_statusline.py', 'zorua_tui.py')]"
           zsh -n zorua.zsh
           sh -n install.sh
           sh -n uninstall.sh
@@ -69,12 +69,16 @@ jobs:
         if: matrix.python == '3.12'
         run: |
           python -m pip install --quiet ruff
-          ruff check --select F,E9 --no-cache zorua_core.py zorua_providers.py zorua_statusline.py web/tests/api_test.py web/tests/ui/fixture_core.py
+          ruff check --select F,E9 --no-cache zorua_core.py zorua_providers.py zorua_statusline.py zorua_tui.py web/tests/api_test.py web/tests/ui/fixture_core.py
 
       - name: Syntax check
         run: |
           bash -n zorua.bash
           fish -n zorua.fish
+
+      # The smoke job runs every unittest on the runner's python3; this runs the TUI ones on 3.8 too.
+      - name: TUI tests
+        run: python -m unittest tests.test_tui
 
       - name: bash smoke tests
         run: bash tests/smoke.bash
