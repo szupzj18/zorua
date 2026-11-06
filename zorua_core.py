@@ -689,6 +689,11 @@ def label(s):
     return "%dH" % (s // 3600) if s < 86400 else "%dD" % (s // 86400)
 
 
+def ago(secs):
+    """How long ago, for cached usage: 7m, 2h10m, 3d."""
+    return "%dm" % (secs // 60) if secs < 3600 else "%dh%dm" % (secs // 3600, secs % 3600 // 60) if secs < 86400 else "%dd" % (secs // 86400)
+
+
 def collect_usage(all_acc, online, info=None):
     """-> (info, live, claude_age, claude_expired). Pass the info of an earlier call to reuse
     it instead of reading every account's sign-in again (`claude auth status` is slow)."""
@@ -792,9 +797,6 @@ def render(online, verbose, expiry=False, as_json=False, full=False, remaining=F
     if as_json:
         emit_json(all_acc, info, live, claude_age, claude_expired, hide)
         return
-
-    def ago(secs):
-        return "%dm" % (secs // 60) if secs < 3600 else "%dh%dm" % (secs // 3600, secs % 3600 // 60) if secs < 86400 else "%dd" % (secs // 86400)
 
     def pct_code(p):
         return "31" if p >= 80 else "33" if p >= 50 else "32"
@@ -1733,6 +1735,10 @@ def cmd_tui(args, st):
         return 1
     if not zt.available(sys.stdin, sys.stdout):
         err(zt.NOT_TTY)
+        return 1
+    problem = zt.term_problem()
+    if problem:
+        err(problem)
         return 1
     try:
         action, loader = zt.run(sys.modules[__name__], full)

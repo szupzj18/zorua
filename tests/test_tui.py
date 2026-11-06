@@ -83,9 +83,10 @@ class Rows(Base):
             "primary_window": {"used_percent": short, "limit_window_seconds": 18000, "reset_after_seconds": 3000},
             "secondary_window": {"used_percent": weekly, "limit_window_seconds": 604800, "reset_after_seconds": 90000}}}, None
 
-    def build(self, info=None, live=None, remaining=False, env=None, full=False):
-        return zt.build_rows(self.c, self.c.all_accounts(), info, live, self.c.zp.load(str(self.cfg)),
-                             os.environ if env is None else env, remaining, full)
+    def build(self, info=None, live=None, remaining=False, env=None, full=False, ages=None, expired=None):
+        with patch.dict(os.environ, env or {}):
+            return zt.build_rows(self.c, self.c.all_accounts(), info, live, self.c.zp.load(str(self.cfg)),
+                                 remaining, full, ages, expired)
 
     def test_groups_accounts_and_providers_with_masked_email_and_usage(self):
         work = self.codex("work", "jonathan.smith@gmail.com")
@@ -121,6 +122,17 @@ class Rows(Base):
         self.assertEqual(rows[1]["email"], "jonathan.smith@gmail.com")
         rows = self.build(info, {"work": (None, "token expired (run codex once to refresh)")})
         self.assertEqual(rows[1]["usage"], "token expired (run codex once to refresh)")
+
+    def test_claude_rows_say_how_old_the_relay_cache_is(self):
+        self.claude("cl")
+        info = {"cl": {"email": None, "plan": "pro", "until": None, "tok": {}, "state": "ok"}}
+        live = {"cl": ({"rate_limit": {"primary_window": {"used_percent": 40, "limit_window_seconds": 18000,
+                                                          "reset_after_seconds": 600}, "secondary_window": None}}, None)}
+        rows = self.build(info, live, ages={"cl": 7300}, expired={"cl": [{"window_seconds": 604800, "reset_ago_seconds": 120}]})
+        self.assertEqual([w["label"] for w in rows[1]["windows"]], ["5H"])
+        self.assertEqual(rows[1]["usage"], "as of 2h1m ago, 7D reset 2m ago")
+        rows = self.build(info, {}, ages={"cl": None})
+        self.assertEqual(rows[1]["usage"], "–")              # no relay cache yet
 
     def test_default_account_is_active_when_codex_home_is_unset(self):
         self.c.write_tsv(self.c.ACCOUNT_FILE, [("default", str(self.root / ".codex"))])
@@ -202,7 +214,7 @@ class Drawing(Base):
     def test_help_and_status_do_not_cover_the_selected_row(self):
         for i in range(20):
             self.codex("acct%d" % i)
-        rows = zt.build_rows(self.c, self.c.all_accounts(), None, None, {}, {})
+        rows = zt.build_rows(self.c, self.c.all_accounts(), None, None, {})
         sc = self.screen(12, 70)
         sc.draw(rows, {"sel": 19, "help": True}, "STATUS-LINE", {"active": "*", "auto": "+", "remaining": False})
         h, foot = 12, len(zt.HELP_LINES)
@@ -334,7 +346,7 @@ class Keys(Base):
         self.codex("one")
         self.codex("two")
         self.providers()
-        return zt.build_rows(self.c, self.c.all_accounts(), None, None, self.c.zp.load(str(self.cfg)), {})
+        return zt.build_rows(self.c, self.c.all_accounts(), None, None, self.c.zp.load(str(self.cfg)))
 
     def test_movement_clamps_and_skips_headings(self):
         rows = self.rows()                    # Codex, one, two, Providers (Claude Code), relay, Providers (Codex), gw
@@ -389,9 +401,8 @@ class NotATerminal(Base):
         self.assertIn("zorua ls", r.stderr)
         self.assertFalse((self.root / "eval").exists())
 
-    @unittest.skipIf(pty is None or not hasattr(os, "fork"), "pty not available")
-    def test_unknown_term_names_the_terminal_type(self):
-        env = dict(os.environ, TERM="zorua-no-such-term", ZORUA_EVAL_FILE=str(self.root / "eval"))
+    def run_in_pty(self, term):
+        env = dict(os.environ, TERM=term, ZORUA_EVAL_FILE=str(self.root / "eval"))
         env.pop("TERMINFO", None)
         pid, fd = pty.fork()
         if pid == 0:
@@ -412,7 +423,19 @@ class NotATerminal(Base):
             out += chunk
         _, st = os.waitpid(pid, 0)
         os.close(fd)
-        self.assertEqual(os.WEXITSTATUS(st), 1, out)
+        return os.WEXITSTATUS(st), out
+
+    @unittest.skipIf(pty is None or not hasattr(os, "fork"), "pty not available")
+    def test_term_without_cursor_moves_is_refused(self):
+        rc, out = self.run_in_pty("dumb")       # a blank screen that still takes keys, before this check
+        self.assertEqual(rc, 1, out)
+        self.assertIn(b"terminal type 'dumb' cannot move the cursor", out)
+        self.assertFalse((self.root / "eval").exists())
+
+    @unittest.skipIf(pty is None or not hasattr(os, "fork"), "pty not available")
+    def test_unknown_term_names_the_terminal_type(self):
+        rc, out = self.run_in_pty("zorua-no-such-term")
+        self.assertEqual(rc, 1, out)
         self.assertIn(b"terminal type 'zorua-no-such-term' is unknown here", out)
         self.assertIn(b"TERM=xterm-256color zorua tui", out)
         self.assertNotIn(b"must be a TTY", out)
@@ -590,7 +613,7 @@ class Loading(Base):
                 self.assertTrue(loader.start())
                 loader.thread.join(30)
                 self.assertEqual(log.read_text().count("auth status"), want)
-        info, live, error = loader.snapshot()
+        info, live, error, _, _ = loader.snapshot()
         self.assertEqual((info["c1"]["state"], error), ("none", ""))
         self.assertIsNotNone(live)
 
