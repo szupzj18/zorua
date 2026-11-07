@@ -182,6 +182,44 @@ class ProviderKeys(unittest.TestCase):
         self.assertEqual(launch.call_args[0][2]['ANTHROPIC_AUTH_TOKEN'], self.key)
         self.assertEqual((self.cfg / 'run/cc.settings.json').stat().st_mode & 0o777, 0o600)
 
+    def test_launch_refuses_an_api_key_claude_code_rejected(self):
+        c = self.core()
+        key = 'dummy-api-key-0123456789abcdefghij'
+        zp.save(str(self.cfg), {
+            'ak': {'env': zp.build_env('https://gate.example', key, api_key=True)},
+            'tok': {'env': zp.build_env('https://relay.example', key)},
+        })
+        home = self.root / 'claude-home'
+        home.mkdir()
+        state = home / '.claude.json'
+
+        def answers(approved=(), rejected=()):
+            state.write_text(json.dumps({'customApiKeyResponses': {
+                'approved': [k[-20:] for k in approved], 'rejected': [k[-20:] for k in rejected]}}))
+
+        def launch(name, args=()):
+            errors = io.StringIO()
+            with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(home)}), \
+                    patch.object(c, '_exec_agent', return_value=0) as run, contextlib.redirect_stderr(errors):
+                rc = c.launch_claude(name, list(args))
+            return rc, run.called, errors.getvalue()
+
+        answers(rejected=[key])
+        rc, ran, errors = launch('ak')
+        self.assertEqual((rc, ran), (1, False))
+        self.assertIn('rejected list', errors)
+        self.assertIn(str(state), errors)
+        self.assertNotIn(key[-20:], errors)
+        self.assertEqual(launch('ak', ['-p', 'hi'])[:2], (0, True))
+        self.assertEqual(launch('tok')[:2], (0, True))
+        answers(approved=[key])
+        self.assertEqual(launch('ak')[:2], (0, True))
+        for broken in ('', '[]', '{"customApiKeyResponses": "x"}', '{"customApiKeyResponses": {"rejected": "x"}}'):
+            state.write_text(broken)
+            self.assertEqual(launch('ak')[:2], (0, True), broken)
+        state.unlink()
+        self.assertEqual(launch('ak')[:2], (0, True))
+
     def test_edit_can_switch_auth_variable_without_plaintext(self):
         c = self.core()
         p = zp.store_key('cc', self.claude, self.key)

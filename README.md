@@ -387,6 +387,10 @@ are blanked, so a relay's model names do not leak into another provider.
 - Claude: `--api-key` sends the key as `ANTHROPIC_API_KEY` (default `ANTHROPIC_AUTH_TOKEN`);
   `--model ROLE=ID` with ROLE in `default`, `opus`, `sonnet`, `haiku`, `subagent`;
   `--env VAR=VALUE` adds any other variable.
+- An interactive `claude` asks once whether to use an `ANTHROPIC_API_KEY`; answer Yes. If the
+  key was answered No, Claude Code ignores it and sends your Claude login to the provider
+  (a 401), so zorua refuses to launch and says where to clear the answer. `claude -p` uses
+  the key either way.
 - Codex: `--model ID` (exactly one), `--wire-api` (default `responses`).
 - Both: `--key-env VAR` reads the key from a variable; `--force` replaces a provider. A name
   belongs to one agent and is unique across accounts and providers.
