@@ -471,6 +471,29 @@ def user_settings(base):
     return doc if isinstance(doc, dict) else {}
 
 
+def claude_state_path(base):
+    """Claude Code's own state file (logins, trust, API key answers) for the config dir in `base`."""
+    home = base.get("CLAUDE_CONFIG_DIR")
+    return os.path.join(home, ".claude.json") if home else os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def api_key_rejected(base, provider_env):
+    """True when Claude Code has this provider's ANTHROPIC_API_KEY on its rejected list.
+    An interactive claude then ignores the key and sends the account's own login to the provider."""
+    key = provider_env.get("ANTHROPIC_API_KEY")
+    if not key:
+        return False
+    try:
+        with open(claude_state_path(base)) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return False
+    answers = doc.get("customApiKeyResponses") if isinstance(doc, dict) else None
+    rejected = answers.get("rejected") if isinstance(answers, dict) else None
+    # Claude Code records an answer as the key's last 20 characters.
+    return isinstance(rejected, list) and key[-20:] in rejected
+
+
 def provider_settings(p):
     """Claude Code settings this provider needs (e.g. a gateway that rejects some feature);
     the env block stays the provider env."""

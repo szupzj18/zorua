@@ -2032,6 +2032,12 @@ def launch_claude(name, args, model_sel=""):
     mid = _chosen_model(prov, model_sel)
     if mid:
         env["ANTHROPIC_MODEL"] = mid
+    if not {"-p", "--print"} & set(args) and zp.api_key_rejected(os.environ, env):
+        err("zorua: Claude Code has the API key of provider '%s' on its rejected list, so it would ignore "
+            "the key and send your Claude login to %s instead, which fails with 401. Remove the key from "
+            "customApiKeyResponses.rejected in %s, then start claude again and answer Yes when it asks "
+            "about the key." % (name, zp.host(env), zp.claude_state_path(os.environ)))
+        return 1
     settings = zp.write_settings(CONFIG_DIR, name, zp.settings_for(os.environ, env, zp.provider_settings(prov)))
     return _exec_agent("claude", ["--settings", settings], zp.process_env(os.environ, env), args)
 
